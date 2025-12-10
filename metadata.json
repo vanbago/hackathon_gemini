@@ -1,0 +1,7 @@
+{
+  "name": "Transmission Center AI",
+  "description": "AI-powered transmission center for monitoring operations, analyzing real-time field data from chats, and generating geospatial activity reports.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
