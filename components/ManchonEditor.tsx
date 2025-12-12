@@ -1,15 +1,16 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { InfrastructurePoint, InfrastructureType, InfrastructureCategory, Liaison, CableSection, FiberStrand, SplicingConnection } from '../types';
 
 interface ManchonEditorProps {
   infra: InfrastructurePoint;
-  liaisonContext?: Liaison; // To find cables
+  liaisonContext: Liaison; 
   onSave: (updatedInfra: InfrastructurePoint) => void;
+  onAddSection: (startNodeId: string) => void; // Callback to create a cable starting here
   onClose: () => void;
 }
 
-const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, onSave, onClose }) => {
+const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, onSave, onAddSection, onClose }) => {
   const [name, setName] = useState(infra.name);
   const [activeTab, setActiveTab] = useState<'INFO' | 'SPLICING'>('SPLICING');
   
@@ -23,16 +24,41 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
 
   // UI State for Splicing
   const [selectedIncomingStrand, setSelectedIncomingStrand] = useState<string | null>(null);
+  
+  // --- TOPOLOGY LOGIC REFACTOR ---
+  
+  // 1. Find ALL sections connected to this infrastructure point (Start or End)
+  const connectedSections = useMemo(() => {
+      if (!liaisonContext || !liaisonContext.sections) return [];
+      return liaisonContext.sections.filter(s => s.startPointId === infra.id || s.endPointId === infra.id);
+  }, [liaisonContext.sections, infra.id]);
 
-  // Context Discovery
-  const [incomingSection, setIncomingSection] = useState<CableSection | null>(null);
-  const [outgoingSection, setOutgoingSection] = useState<CableSection | null>(null);
+  // 2. State to manually select which section is "Incoming" (Source)
+  const [incomingSectionId, setIncomingSectionId] = useState<string>('');
 
+  // 3. Auto-detect default incoming on load (Logic: Section ending here is usually incoming)
   useEffect(() => {
-      if (!liaisonContext || !liaisonContext.sections) return;
-      if (liaisonContext.sections.length >= 1) setIncomingSection(liaisonContext.sections[0]);
-      if (liaisonContext.sections.length >= 2) setOutgoingSection(liaisonContext.sections[1]);
-  }, [liaisonContext, infra.id]);
+      if (connectedSections.length > 0 && !incomingSectionId) {
+          // Priority 1: A section that explicitly ENDS at this node
+          const defaultIncoming = connectedSections.find(s => s.endPointId === infra.id);
+          // Priority 2: Just take the first one found
+          setIncomingSectionId(defaultIncoming ? defaultIncoming.id : connectedSections[0].id);
+      }
+  }, [connectedSections, infra.id]);
+
+  // 4. Derived Lists based on selection
+  const incomingSection = connectedSections.find(s => s.id === incomingSectionId) || null;
+  // All other connected sections are treated as "Outgoing" (Destination)
+  const outgoingSections = connectedSections.filter(s => s.id !== incomingSectionId);
+  
+  const [activeOutgoingTabId, setActiveOutgoingTabId] = useState<string | null>(null);
+
+  // Set default active tab for outgoing
+  useEffect(() => {
+      if (outgoingSections.length > 0 && (!activeOutgoingTabId || !outgoingSections.find(s => s.id === activeOutgoingTabId))) {
+          setActiveOutgoingTabId(outgoingSections[0].id);
+      }
+  }, [outgoingSections, activeOutgoingTabId]);
 
   const handleSave = () => {
     onSave({
@@ -56,27 +82,25 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
     return map[colorName] || '#fff';
   };
 
-  // --- ROBUST SPLICING LOGIC ---
+  // --- SPLICING LOGIC ---
 
   const handleIncomingClick = (strandId: string) => {
-      // Toggle selection
       setSelectedIncomingStrand(prev => prev === strandId ? null : strandId);
   };
 
   const handleOutgoingClick = (outgoingStrandId: string) => {
       if (!selectedIncomingStrand) return;
 
-      // Check if connection already exists for this pair
+      // Existing connection check
       const existingIndex = connections.findIndex(c => c.incomingStrandId === selectedIncomingStrand);
-
       let newConnections = [...connections];
 
       if (existingIndex !== -1) {
-          // If clicking the same one -> Disconnect
           if (connections[existingIndex].outgoingStrandId === outgoingStrandId) {
+              // Toggle Off
               newConnections.splice(existingIndex, 1);
           } else {
-              // Switch connection to new outgoing strand
+              // Replace destination
               newConnections[existingIndex] = {
                   incomingStrandId: selectedIncomingStrand,
                   outgoingStrandId: outgoingStrandId,
@@ -84,7 +108,7 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
               };
           }
       } else {
-          // Create new connection
+          // Add new
           newConnections.push({
               incomingStrandId: selectedIncomingStrand,
               outgoingStrandId: outgoingStrandId,
@@ -93,35 +117,37 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
       }
 
       setConnections(newConnections);
-      setSelectedIncomingStrand(null); // Reset selection after action
+      setSelectedIncomingStrand(null);
   };
 
-  const isConnected = (incomingId: string) => {
-      return connections.some(c => c.incomingStrandId === incomingId);
-  };
-
-  const getConnectedOutgoingId = (incomingId: string) => {
-      return connections.find(c => c.incomingStrandId === incomingId)?.outgoingStrandId;
-  };
+  const isConnected = (incomingId: string) => connections.some(c => c.incomingStrandId === incomingId);
+  
+  // Check if an outgoing strand is connected (reverse lookup)
+  const isOutgoingConnected = (outgoingId: string) => connections.some(c => c.outgoingStrandId === outgoingId);
 
   const autoSplice = () => {
-      if (!incomingSection?.fiberStrands || !outgoingSection?.fiberStrands) return;
-      const newConns: SplicingConnection[] = [];
-      const count = Math.min(incomingSection.fiberStrands.length, outgoingSection.fiberStrands.length);
+      if (!incomingSection?.fiberStrands) return;
+      const targetSection = outgoingSections.find(s => s.id === activeOutgoingTabId);
+      if (!targetSection?.fiberStrands) return;
+
+      const newConns = [...connections];
+      const count = Math.min(incomingSection.fiberStrands.length, targetSection.fiberStrands.length);
       
       for(let i=0; i<count; i++) {
-          newConns.push({
-              incomingStrandId: incomingSection.fiberStrands[i].id,
-              outgoingStrandId: outgoingSection.fiberStrands[i].id,
-              status: 'SPLICED'
-          });
+          const incId = incomingSection.fiberStrands[i].id;
+          const outId = targetSection.fiberStrands[i].id;
+          
+          // Avoid duplicates
+          if (!newConns.find(c => c.incomingStrandId === incId)) {
+               newConns.push({ incomingStrandId: incId, outgoingStrandId: outId, status: 'SPLICED' });
+          }
       }
       setConnections(newConns);
   };
 
-  const clearAllSplices = () => {
-      setConnections([]);
-  };
+  // CHECK: Semi-Artere Logic
+  // A semi-artere implies: 1 Input + (1 Output Backbone Continuation + 1 Output Piquage) = Minimum 2 Outputs
+  const isSemiArtereInvalid = category === InfrastructureCategory.SEMI_ARTERE && outgoingSections.length < 2;
 
   return (
     <div className="fixed inset-0 z-[1400] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -129,52 +155,87 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
         
         {/* HEADER */}
         <div className="flex justify-between items-center p-4 border-b border-slate-700 bg-slate-800 rounded-t-xl">
-             <div className="flex items-center gap-3">
-                 <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${type === InfrastructureType.CHAMBRE ? 'bg-purple-600' : 'bg-orange-600'}`}>
-                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+             <div className="flex items-center gap-4">
+                 <div className={`w-12 h-12 rounded-lg flex items-center justify-center border-2 shadow-lg ${
+                     category === InfrastructureCategory.ARTERE ? 'bg-red-600 border-yellow-400' :
+                     category === InfrastructureCategory.SEMI_ARTERE ? 'bg-orange-600 border-white' :
+                     'bg-purple-600 border-slate-500'
+                 }`}>
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
                  </div>
                  <div>
-                     <h3 className="font-bold text-white text-lg">{name}</h3>
-                     <p className="text-xs text-slate-400">Éditeur d'Épissurage & Infrastructure</p>
+                     <h3 className="font-bold text-white text-xl flex items-center gap-2">
+                         {name}
+                         <span className="text-[10px] bg-slate-900 border border-slate-600 px-2 py-0.5 rounded text-slate-300 uppercase">{category.replace('_', ' ')}</span>
+                     </h3>
+                     <p className="text-xs text-slate-400">
+                         {incomingSection ? `Source: ${incomingSection.name}` : 'Non raccordé'} • {outgoingSections.length} Départ(s)
+                     </p>
                  </div>
              </div>
-             <div className="flex bg-slate-900 rounded p-1">
-                 <button onClick={() => setActiveTab('SPLICING')} className={`px-4 py-1 text-xs font-bold rounded ${activeTab === 'SPLICING' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'}`}>CASSETTE / ÉPISSURES</button>
-                 <button onClick={() => setActiveTab('INFO')} className={`px-4 py-1 text-xs font-bold rounded ${activeTab === 'INFO' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>INFOS GÉNÉRALES</button>
+             <div className="flex bg-slate-900 rounded p-1 border border-slate-700">
+                 <button onClick={() => setActiveTab('SPLICING')} className={`px-6 py-2 text-xs font-bold rounded transition-all ${activeTab === 'SPLICING' ? 'bg-teal-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}>CASSETTE / ÉPISSURES</button>
+                 <button onClick={() => setActiveTab('INFO')} className={`px-6 py-2 text-xs font-bold rounded transition-all ${activeTab === 'INFO' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}>CONFIGURATION INFRA</button>
              </div>
         </div>
 
         {/* BODY */}
-        <div className="flex-1 overflow-hidden p-0 bg-slate-950">
+        <div className="flex-1 overflow-hidden p-0 bg-slate-950 flex flex-col">
             
+            {/* ALERT FOR SEMI-ARTERE */}
+            {isSemiArtereInvalid && (
+                <div className="bg-orange-900/50 border-b border-orange-500/50 p-2 text-center text-xs text-orange-200 font-bold flex items-center justify-center gap-2 animate-pulse">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                    Configuration Semi-Artère Incomplète : Il faut au moins 1 Câble Arrivée + 2 Départs (1 Continuité Backbone + 1 Piquage).
+                </div>
+            )}
+
             {/* TAB: SPLICING */}
             {activeTab === 'SPLICING' && (
                 <div className="h-full flex flex-col">
-                    <div className="bg-slate-800/50 p-2 border-b border-slate-700 flex justify-between items-center px-6">
+                    <div className="bg-slate-800/50 p-2 border-b border-slate-700 flex justify-between items-center px-6 shrink-0">
                         <div className="text-xs text-slate-400 flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-                            Mode d'emploi : Cliquez sur un brin à GAUCHE, puis sur un brin à DROITE pour souder.
+                            Sélectionnez un brin Entrant (Gauche), puis une destination (Droite).
                         </div>
                         <div className="flex gap-2">
-                             <button onClick={clearAllSplices} className="text-xs bg-red-900/50 hover:bg-red-800 text-red-300 px-3 py-1 rounded border border-red-800">
-                                Tout Déconnecter
+                            <button onClick={autoSplice} className="text-xs bg-teal-900/40 hover:bg-teal-800 text-teal-200 px-3 py-1 rounded border border-teal-700 flex items-center gap-1">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                Auto-Splice (1-1)
                             </button>
-                            <button onClick={autoSplice} className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded border border-slate-500">
-                                Auto-Splice (1-to-1)
+                             <button onClick={() => setConnections([])} className="text-xs bg-red-900/40 hover:bg-red-800 text-red-200 px-3 py-1 rounded border border-red-700">
+                                Reset
                             </button>
                         </div>
                     </div>
 
                     <div className="flex-1 flex overflow-hidden">
                         
-                        {/* LEFT: INCOMING */}
-                        <div className="flex-1 overflow-y-auto border-r border-slate-700 bg-slate-900/50 custom-scrollbar">
+                        {/* LEFT: INCOMING CABLE (With Selector) */}
+                        <div className="w-1/3 overflow-y-auto border-r border-slate-700 bg-slate-900/30 custom-scrollbar flex flex-col">
                             <div className="sticky top-0 bg-slate-900 p-3 border-b border-slate-700 z-10 shadow-md">
-                                <h4 className="font-bold text-slate-200 text-sm text-center">
-                                    {incomingSection ? incomingSection.name : "Câble Entrant"}
-                                </h4>
+                                <div className="flex justify-between items-center mb-2">
+                                    <div className="text-[10px] uppercase font-bold text-blue-500">Câble Arrivée (Source)</div>
+                                    <span className="text-[9px] bg-blue-900/50 text-blue-300 px-1 rounded border border-blue-500/30">AMONT</span>
+                                </div>
+                                
+                                {/* CABLE SELECTOR */}
+                                <select 
+                                    value={incomingSectionId} 
+                                    onChange={(e) => setIncomingSectionId(e.target.value)}
+                                    className="w-full bg-slate-800 border border-slate-600 rounded p-1.5 text-xs text-white font-bold focus:border-blue-500 outline-none mb-1"
+                                >
+                                    {connectedSections.map(s => (
+                                        <option key={s.id} value={s.id}>{s.name} ({s.fiberCount} FO)</option>
+                                    ))}
+                                    {connectedSections.length === 0 && <option>Aucun câble connecté</option>}
+                                </select>
+                                
+                                {incomingSection && <div className="text-[10px] text-slate-500">{incomingSection.cableType}</div>}
                             </div>
-                            <div className="p-4 space-y-2">
+                            
+                            <div className="p-2 space-y-1">
+                                {!incomingSection && <div className="p-4 text-center text-xs text-slate-500 italic">Veuillez connecter des câbles à ce manchon.</div>}
                                 {incomingSection?.fiberStrands?.map(strand => {
                                     const connected = isConnected(strand.id);
                                     const isSelected = selectedIncomingStrand === strand.id;
@@ -185,63 +246,104 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                                             onClick={() => handleIncomingClick(strand.id)}
                                             className={`flex items-center justify-between p-2 rounded cursor-pointer transition-all border ${
                                                 isSelected 
-                                                ? 'bg-blue-900/40 border-blue-400 shadow-[0_0_10px_rgba(59,130,246,0.5)]' 
+                                                ? 'bg-blue-600 border-blue-400 text-white shadow-lg scale-[1.02]' 
                                                 : connected ? 'bg-slate-800 border-slate-700 opacity-60' : 'bg-slate-800 border-slate-700 hover:border-slate-500'
                                             }`}
                                         >
                                             <div className="flex items-center gap-2">
-                                                <div className="w-3 h-3 rounded-full border border-white/10" style={{ backgroundColor: getFiberColorHex(strand.colorCode) }}></div>
-                                                <span className="text-xs font-mono text-slate-400 w-6 text-center">{strand.number}</span>
-                                                <span className="text-xs text-slate-200 truncate max-w-[120px]">{strand.serviceName || 'Libre'}</span>
+                                                <div className="w-3 h-3 rounded-full border border-white/20 shadow-sm" style={{ backgroundColor: getFiberColorHex(strand.colorCode) }}></div>
+                                                <span className="text-xs font-mono opacity-70 w-6 text-center">{strand.number}</span>
+                                                <span className="text-xs truncate max-w-[150px] font-medium">{strand.serviceName || 'Brin Libre'}</span>
                                             </div>
-                                            {/* Status Indicator */}
-                                            <div className={`w-3 h-3 rounded-full ${connected ? 'bg-green-500' : 'bg-slate-600'}`}></div>
+                                            {connected && <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>}
                                         </div>
                                     );
                                 })}
                             </div>
                         </div>
 
-                        {/* CENTER: SPLICE TRAY VISUALIZATION */}
-                        <div className="w-24 bg-slate-950 flex flex-col items-center justify-center relative border-r border-slate-700">
-                            <div className="absolute inset-0 opacity-5" style={{ backgroundImage: 'linear-gradient(0deg, transparent 24%, #ffffff 25%, #ffffff 26%, transparent 27%, transparent 74%, #ffffff 75%, #ffffff 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, #ffffff 25%, #ffffff 26%, transparent 27%, transparent 74%, #ffffff 75%, #ffffff 76%, transparent 77%, transparent)', backgroundSize: '30px 30px' }}></div>
-                            <div className="rotate-90 text-xs font-bold text-slate-600 tracking-widest uppercase">Cassette</div>
-                            <svg className="w-12 h-12 text-slate-700 mt-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                        {/* CENTER: SPLICE TRAY */}
+                        <div className="w-20 bg-slate-950 flex flex-col items-center justify-center relative border-r border-slate-700 shadow-inner">
+                            <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundSize: '20px 20px', backgroundImage: 'radial-gradient(circle, #ffffff 1px, transparent 1px)' }}></div>
+                            <div className="-rotate-90 text-[10px] font-bold text-slate-600 tracking-[0.2em] uppercase whitespace-nowrap mb-8">Cassette Soudure</div>
+                            <div className="space-y-4">
+                                <div className="w-10 h-10 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center shadow-lg">
+                                     <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+                                </div>
+                                <div className="w-0.5 h-16 bg-slate-800 mx-auto"></div>
+                                <div className="w-10 h-10 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center shadow-lg">
+                                     <svg className="w-5 h-5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+                                </div>
+                            </div>
                         </div>
 
-                        {/* RIGHT: OUTGOING */}
-                        <div className="flex-1 overflow-y-auto bg-slate-900/50 custom-scrollbar">
-                            <div className="sticky top-0 bg-slate-900 p-3 border-b border-slate-700 z-10 shadow-md">
-                                <h4 className="font-bold text-slate-200 text-sm text-center">
-                                    {outgoingSection ? outgoingSection.name : "Câble Sortant"}
-                                </h4>
+                        {/* RIGHT: OUTGOING CABLES (TABS) */}
+                        <div className="flex-1 flex flex-col bg-slate-900/30">
+                            {/* TABS HEADER */}
+                            <div className="flex overflow-x-auto bg-slate-900 border-b border-slate-700 no-scrollbar">
+                                {outgoingSections.map((sec) => (
+                                    <button
+                                        key={sec.id}
+                                        onClick={() => setActiveOutgoingTabId(sec.id)}
+                                        className={`px-4 py-3 text-xs font-bold border-r border-slate-700 whitespace-nowrap flex items-center gap-2 transition-colors ${
+                                            activeOutgoingTabId === sec.id 
+                                            ? 'bg-slate-800 text-teal-400 border-b-2 border-b-teal-500' 
+                                            : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800'
+                                        }`}
+                                    >
+                                        <div className="w-2 h-2 rounded-full bg-teal-500"></div>
+                                        {sec.name}
+                                    </button>
+                                ))}
+                                
+                                {/* ADD CABLE BUTTON */}
+                                <button 
+                                    onClick={() => onAddSection(infra.id)}
+                                    className="px-4 py-3 text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 flex items-center gap-1 border-r border-slate-700 transition-colors"
+                                >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                                    Nouveau Câble
+                                </button>
                             </div>
-                            <div className="p-4 space-y-2">
-                                {outgoingSection?.fiberStrands?.map(strand => {
-                                    // Check if this specific outgoing strand is connected to ANY incoming
-                                    const incomingMatchId = connections.find(c => c.outgoingStrandId === strand.id)?.incomingStrandId;
-                                    const isThisConnected = !!incomingMatchId;
+
+                            {/* CABLE CONTENT */}
+                            <div className="flex-1 overflow-y-auto p-2 custom-scrollbar relative">
+                                {outgoingSections.length === 0 && (
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 p-6 text-center">
+                                        <svg className="w-12 h-12 mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                        <p className="text-sm font-bold">Aucun câble de départ.</p>
+                                        <p className="text-xs mb-4">Pour une artère ou un piquage, ajoutez au moins un câble sortant.</p>
+                                        <button onClick={() => onAddSection(infra.id)} className="bg-teal-600 text-white px-4 py-2 rounded text-xs font-bold shadow hover:bg-teal-500">
+                                            Ajouter Câble Départ
+                                        </button>
+                                    </div>
+                                )}
+
+                                {outgoingSections.find(s => s.id === activeOutgoingTabId)?.fiberStrands?.map(strand => {
+                                    // Reverse lookup to find if THIS strand is spliced to selected incoming
+                                    const incomingSourceId = connections.find(c => c.outgoingStrandId === strand.id)?.incomingStrandId;
+                                    const isConnected = !!incomingSourceId;
                                     
-                                    // Highlight if it matches the CURRENT selection
-                                    const matchesSelection = selectedIncomingStrand && incomingMatchId === selectedIncomingStrand;
+                                    // Is it connected to the CURRENTLY selected incoming strand?
+                                    const isMatch = selectedIncomingStrand && incomingSourceId === selectedIncomingStrand;
 
                                     return (
                                         <div 
                                             key={strand.id} 
                                             onClick={() => handleOutgoingClick(strand.id)}
-                                            className={`flex items-center justify-between p-2 rounded cursor-pointer transition-all border flex-row-reverse ${
-                                                matchesSelection
-                                                ? 'bg-green-900/40 border-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]'
-                                                : isThisConnected ? 'bg-slate-800 border-slate-700 opacity-60' : 'bg-slate-800 border-slate-700 hover:border-slate-500'
+                                            className={`flex items-center justify-between p-2 mb-1 rounded cursor-pointer transition-all border flex-row-reverse ${
+                                                isMatch
+                                                ? 'bg-teal-600 border-teal-400 text-white shadow-lg scale-[1.02]'
+                                                : isConnected ? 'bg-slate-800 border-slate-700 opacity-60' : 'bg-slate-800 border-slate-700 hover:border-slate-500'
                                             }`}
                                         >
                                             <div className="flex items-center gap-2 flex-row-reverse">
-                                                <div className="w-3 h-3 rounded-full border border-white/10" style={{ backgroundColor: getFiberColorHex(strand.colorCode) }}></div>
-                                                <span className="text-xs font-mono text-slate-400 w-6 text-center">{strand.number}</span>
-                                                <span className="text-xs text-slate-200 truncate max-w-[120px] text-right">{strand.serviceName || 'Libre'}</span>
+                                                <div className="w-3 h-3 rounded-full border border-white/20 shadow-sm" style={{ backgroundColor: getFiberColorHex(strand.colorCode) }}></div>
+                                                <span className="text-xs font-mono opacity-70 w-6 text-center">{strand.number}</span>
+                                                <span className="text-xs truncate max-w-[150px] text-right font-medium">{strand.serviceName || 'Brin Libre'}</span>
                                             </div>
                                             {/* Connector Dot */}
-                                            <div className={`w-3 h-3 rounded-full border-2 ${isThisConnected ? 'bg-green-500 border-green-700' : 'bg-transparent border-slate-600'}`}></div>
+                                            <div className={`w-3 h-3 rounded-full border-2 ${isConnected ? 'bg-green-500 border-green-700' : 'bg-transparent border-slate-600'}`}></div>
                                         </div>
                                     );
                                 })}
@@ -252,32 +354,57 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                 </div>
             )}
 
-            {/* TAB: INFO */}
+            {/* TAB: INFO CONFIG */}
             {activeTab === 'INFO' && (
-                <div className="p-8 max-w-2xl mx-auto space-y-6">
-                     <div>
-                        <label className="block text-xs text-slate-400 mb-1">Nom / Identifiant</label>
-                        <input value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-sm text-white focus:border-blue-500 outline-none" />
+                <div className="p-8 max-w-2xl mx-auto space-y-6 animate-fadeIn">
+                     <div className="bg-slate-800 p-4 rounded border border-slate-700">
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Nom de l'Infrastructure</label>
+                        <input value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white focus:border-blue-500 outline-none" />
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-xs text-slate-400 mb-1">Type Physique</label>
-                            <select value={type} onChange={e => setType(e.target.value as InfrastructureType)} className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-sm text-white">
-                                {Object.values(InfrastructureType).map(t => <option key={t} value={t}>{t}</option>)}
-                            </select>
+                        <div className="bg-slate-800 p-4 rounded border border-slate-700">
+                            <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Type Physique</label>
+                            <div className="space-y-2">
+                                {Object.values(InfrastructureType).map(t => (
+                                    <label key={t} className="flex items-center gap-2 cursor-pointer">
+                                        <input type="radio" name="infraType" checked={type === t} onChange={() => setType(t)} className="accent-blue-500" />
+                                        <span className="text-sm text-slate-200">{t.replace('_', ' ')}</span>
+                                    </label>
+                                ))}
+                            </div>
                         </div>
-                        <div>
-                            <label className="block text-xs text-slate-400 mb-1">Catégorie Réseau</label>
-                            <select value={category} onChange={e => setCategory(e.target.value as InfrastructureCategory)} className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-sm text-white">
-                                {Object.values(InfrastructureCategory).map(c => <option key={c} value={c}>{c}</option>)}
-                            </select>
+                        <div className="bg-slate-800 p-4 rounded border border-slate-700">
+                            <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Rôle Topologique</label>
+                            <div className="space-y-2">
+                                <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-700/50">
+                                    <input type="radio" name="infraCat" checked={category === InfrastructureCategory.STANDARD} onChange={() => setCategory(InfrastructureCategory.STANDARD)} className="accent-purple-500" />
+                                    <div>
+                                        <div className="text-sm font-bold text-slate-200">Standard</div>
+                                        <div className="text-[10px] text-slate-500">Jonction simple (1 Entrée / 1 Sortie)</div>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-700/50">
+                                    <input type="radio" name="infraCat" checked={category === InfrastructureCategory.SEMI_ARTERE} onChange={() => setCategory(InfrastructureCategory.SEMI_ARTERE)} className="accent-orange-500" />
+                                    <div>
+                                        <div className="text-sm font-bold text-orange-400">Semi-Artère (Piquage)</div>
+                                        <div className="text-[10px] text-slate-500">Extraction vers Site (1 Entrée / 2+ Sorties)</div>
+                                    </div>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer p-2 rounded hover:bg-slate-700/50">
+                                    <input type="radio" name="infraCat" checked={category === InfrastructureCategory.ARTERE} onChange={() => setCategory(InfrastructureCategory.ARTERE)} className="accent-red-500" />
+                                    <div>
+                                        <div className="text-sm font-bold text-red-400">Artère Principale</div>
+                                        <div className="text-[10px] text-slate-500">Nœud Backbone Critique</div>
+                                    </div>
+                                </label>
+                            </div>
                         </div>
                     </div>
 
-                    <div>
-                        <label className="block text-xs text-slate-400 mb-1">Description & Localisation</label>
-                        <textarea value={description} onChange={e => setDescription(e.target.value)} className="w-full bg-slate-950 border border-slate-600 rounded p-2 text-sm text-white h-32 focus:border-blue-500 outline-none" />
+                    <div className="bg-slate-800 p-4 rounded border border-slate-700">
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Description & Notes</label>
+                        <textarea value={description} onChange={e => setDescription(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white h-24 focus:border-blue-500 outline-none" placeholder="Ex: Situé à 5m du carrefour, trappe bloquée..." />
                     </div>
                 </div>
             )}
@@ -285,8 +412,10 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
 
         {/* FOOTER */}
         <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3 rounded-b-xl">
-             <button onClick={onClose} className="px-4 py-2 text-slate-400 hover:text-white text-sm">Annuler</button>
-             <button onClick={handleSave} className="px-6 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded shadow text-sm font-bold transition-transform active:scale-95">Enregistrer Configuration</button>
+             <button onClick={onClose} className="px-4 py-2 text-slate-400 hover:text-white text-sm font-medium">Fermer sans sauvegarder</button>
+             <button onClick={handleSave} className="px-6 py-2 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white rounded shadow-lg text-sm font-bold transition-transform active:scale-95">
+                 Enregistrer Configuration
+             </button>
         </div>
 
       </div>

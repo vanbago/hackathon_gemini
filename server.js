@@ -13,18 +13,30 @@ const DB_PATH = path.join(__dirname, 'transmission.db');
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// --- LOGGING UTILITY ---
+const log = (level, message, meta = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(JSON.stringify({ timestamp, level, message, ...meta }));
+};
+
+// Request Logger Middleware
+app.use((req, res, next) => {
+    log('INFO', `Incoming Request`, { method: req.method, url: req.url });
+    next();
+});
+
 // --- DATABASE SETUP (SQLite) ---
 if (!fs.existsSync(DB_PATH)) {
-    console.log("Creating new database file at:", DB_PATH);
+    log('INFO', "Creating new database file", { path: DB_PATH });
     const fd = fs.openSync(DB_PATH, 'w');
     fs.closeSync(fd);
 }
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
-        console.error('Error opening database', err.message);
+        log('ERROR', 'Error opening database', { error: err.message });
     } else {
-        console.log('Connected to SQLite database.');
+        log('INFO', 'Connected to SQLite database.');
         initDb();
     }
 });
@@ -33,7 +45,7 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
 function initDb() {
     db.serialize(() => {
         db.run(`CREATE TABLE IF NOT EXISTS sites (id TEXT PRIMARY KEY, type TEXT, data TEXT)`);
-        db.run(`CREATE TABLE IF NOT EXISTS liaisons (id TEXT PRIMARY KEY, data TEXT)`); // Stores nested sections/troncons
+        db.run(`CREATE TABLE IF NOT EXISTS liaisons (id TEXT PRIMARY KEY, data TEXT)`); 
         db.run(`CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, timestamp DATETIME, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
@@ -60,7 +72,7 @@ const getQuery = (query, params = []) => {
 // --- API ROUTES ---
 
 // 1. GET INITIAL STATE
-app.get('/api/state', async (req, res) => {
+app.get('/api/state', async (req, res, next) => {
     try {
         const [sitesRows, liaisonsRows, activitiesRows, messagesRows, ticketsRows] = await Promise.all([
             getQuery("SELECT data FROM sites"),
@@ -81,13 +93,12 @@ app.get('/api/state', async (req, res) => {
 
         res.json({ ctt, btsStations, liaisons, activities, messages, tickets });
     } catch (error) {
-        console.error("Error loading state:", error);
-        res.status(500).json({ error: "Database error" });
+        next(error);
     }
 });
 
 // 2. BATCH INIT
-app.post('/api/init-defaults', async (req, res) => {
+app.post('/api/init-defaults', async (req, res, next) => {
     const { ctt, btsStations, liaisons, activities, tickets } = req.body;
     try {
         db.serialize(() => {
@@ -104,43 +115,74 @@ app.post('/api/init-defaults', async (req, res) => {
             if (tickets) tickets.forEach(t => stmtTicket.run(t.id, t.status, JSON.stringify(t)));
 
             db.run("COMMIT", (err) => {
-                if (err) res.status(500).json({ error: err.message });
-                else {
+                if (err) {
+                    log('ERROR', 'Transaction Commit Failed', { error: err.message });
+                    next(err);
+                } else {
                     stmtSite.finalize(); stmtLiaison.finalize(); stmtAct.finalize(); stmtTicket.finalize();
                     res.json({ success: true });
                 }
             });
         });
-    } catch (error) { res.status(500).json({ error: error.message }); }
+    } catch (error) { next(error); }
 });
 
 // 3. PERSISTENCE
-app.post('/api/sites', async (req, res) => {
+app.post('/api/sites', async (req, res, next) => {
     const site = req.body;
+    if (!site.id) return res.status(400).json({ error: "Missing site ID" });
     const type = site.id.includes('ctt') ? 'CTT' : 'BTS';
-    try { await runQuery("INSERT OR REPLACE INTO sites (id, type, data) VALUES (?, ?, ?)", [site.id, type, JSON.stringify(site)]); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+    try { 
+        await runQuery("INSERT OR REPLACE INTO sites (id, type, data) VALUES (?, ?, ?)", [site.id, type, JSON.stringify(site)]); 
+        res.json({ success: true }); 
+    } catch (e) { next(e); }
 });
 
-app.post('/api/liaisons', async (req, res) => {
+app.post('/api/liaisons', async (req, res, next) => {
     const liaison = req.body;
-    try { await runQuery("INSERT OR REPLACE INTO liaisons (id, data) VALUES (?, ?)", [liaison.id, JSON.stringify(liaison)]); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+    if (!liaison.id) return res.status(400).json({ error: "Missing liaison ID" });
+    try { 
+        await runQuery("INSERT OR REPLACE INTO liaisons (id, data) VALUES (?, ?)", [liaison.id, JSON.stringify(liaison)]); 
+        res.json({ success: true }); 
+    } catch (e) { next(e); }
 });
 
-app.post('/api/activities', async (req, res) => {
+app.post('/api/activities', async (req, res, next) => {
     const activity = req.body;
-    try { await runQuery("INSERT OR REPLACE INTO activities (id, status, data) VALUES (?, ?, ?)", [activity.id, activity.status, JSON.stringify(activity)]); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+    if (!activity.id) return res.status(400).json({ error: "Missing activity ID" });
+    try { 
+        await runQuery("INSERT OR REPLACE INTO activities (id, status, data) VALUES (?, ?, ?)", [activity.id, activity.status, JSON.stringify(activity)]); 
+        res.json({ success: true }); 
+    } catch (e) { next(e); }
 });
 
-app.post('/api/tickets', async (req, res) => {
+app.post('/api/tickets', async (req, res, next) => {
     const ticket = req.body;
-    try { await runQuery("INSERT OR REPLACE INTO tickets (id, status, data) VALUES (?, ?, ?)", [ticket.id, ticket.status, JSON.stringify(ticket)]); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+    if (!ticket.id) return res.status(400).json({ error: "Missing ticket ID" });
+    try { 
+        await runQuery("INSERT OR REPLACE INTO tickets (id, status, data) VALUES (?, ?, ?)", [ticket.id, ticket.status, JSON.stringify(ticket)]); 
+        res.json({ success: true }); 
+    } catch (e) { next(e); }
 });
 
-app.post('/api/messages', async (req, res) => {
+app.post('/api/messages', async (req, res, next) => {
     const msg = req.body;
-    try { await runQuery("INSERT OR REPLACE INTO messages (id, timestamp, data) VALUES (?, ?, ?)", [msg.id, msg.timestamp, JSON.stringify(msg)]); res.json({ success: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+    if (!msg.id) return res.status(400).json({ error: "Missing message ID" });
+    try { 
+        await runQuery("INSERT OR REPLACE INTO messages (id, timestamp, data) VALUES (?, ?, ?)", [msg.id, msg.timestamp, JSON.stringify(msg)]); 
+        res.json({ success: true }); 
+    } catch (e) { next(e); }
+});
+
+// Centralized Error Handler
+app.use((err, req, res, next) => {
+    log('ERROR', 'Unhandled Error', { error: err.message, stack: err.stack, url: req.url });
+    res.status(500).json({ 
+        error: "Internal Server Error", 
+        details: process.env.NODE_ENV === 'development' ? err.message : undefined 
+    });
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Database Server running on http://localhost:${PORT}`);
+    log('INFO', `Server running`, { port: PORT });
 });

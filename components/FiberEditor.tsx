@@ -1,63 +1,31 @@
 
 import React, { useState, useEffect } from 'react';
-import { Liaison, FiberStrand, InfrastructureType, LiaisonStatus, LiaisonCategory, CableSection, InfrastructurePoint } from '../types';
+import { Liaison, FiberStrand, InfrastructureType, LiaisonStatus, LiaisonCategory, CableSection, InfrastructurePoint, LiaisonType, Operator } from '../types';
 import TronconEditor from './TronconEditor';
 import ManchonEditor from './ManchonEditor';
 
 interface FiberEditorProps {
-  liaison: Liaison;
+  liaison: Liaison | null; // Null implies creating a new liaison
   onSave: (updatedLiaison: Liaison) => void;
   onClose: () => void;
 }
 
-const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) => {
-  // Global Liaison State
-  const [name, setName] = useState(liaison.name);
-  const [distanceKm, setDistanceKm] = useState(liaison.distanceKm);
-  const [status, setStatus] = useState<LiaisonStatus>(liaison.status);
+const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSave, onClose }) => {
+  // --- STATE INIT ---
+  const isNew = !initialLiaison;
+  
+  // Base State
+  const [name, setName] = useState(initialLiaison?.name || 'Nouvelle Liaison');
+  const [distanceKm, setDistanceKm] = useState(initialLiaison?.distanceKm || 0);
+  const [status, setStatus] = useState<LiaisonStatus>(initialLiaison?.status || LiaisonStatus.MAINTENANCE);
+  const [category, setCategory] = useState<LiaisonCategory>(initialLiaison?.category || LiaisonCategory.LAST_MILE);
   
   // Topology State
-  const [sections, setSections] = useState<CableSection[]>(liaison.sections || []);
-  const [infraPoints, setInfraPoints] = useState<InfrastructurePoint[]>(liaison.infrastructurePoints || []);
-  
-  // --- NAVIGATION STATE ---
-  // null = Vue Globale (End-to-End), string = Section ID
-  const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  const [sections, setSections] = useState<CableSection[]>(initialLiaison?.sections || []);
+  const [infraPoints, setInfraPoints] = useState<InfrastructurePoint[]>(initialLiaison?.infrastructurePoints || []);
 
-  // --- DERIVED STATE ---
-  const activeSection = activeViewId ? sections.find(s => s.id === activeViewId) : null;
-  const activeFiberCount = activeSection ? activeSection.fiberCount : (liaison.fiberCount || 12);
-  const activeStrands = activeSection ? (activeSection.fiberStrands || []) : (liaison.fiberStrands || []);
-
-  // Initialize strands for sections if missing
-  useEffect(() => {
-    const initializedSections = sections.map(sec => {
-        if (!sec.fiberStrands || sec.fiberStrands.length === 0) {
-            return { ...sec, fiberStrands: generateStandardFibers(sec.fiberCount) };
-        }
-        return sec;
-    });
-    // Update local state if we initialized data
-    if (JSON.stringify(initializedSections) !== JSON.stringify(sections)) {
-        setSections(initializedSections);
-    }
-  }, []);
-
-  // Modals state
-  const [editingSection, setEditingSection] = useState<CableSection | null>(null);
-  const [editingInfra, setEditingInfra] = useState<InfrastructurePoint | null>(null);
-
+  // Helpers needed early
   const fiberColors = ["Bleu", "Orange", "Vert", "Marron", "Gris", "Blanc", "Rouge", "Noir", "Jaune", "Violet", "Rose", "Aqua"];
-
-  const getFiberColorHex = (colorName: string) => {
-    const map: Record<string, string> = {
-      'Bleu': '#3b82f6', 'Orange': '#f97316', 'Vert': '#22c55e', 'Marron': '#854d0e',
-      'Gris': '#94a3b8', 'Blanc': '#f8fafc', 'Rouge': '#ef4444', 'Noir': '#000000',
-      'Jaune': '#eab308', 'Violet': '#a855f7', 'Rose': '#ec4899', 'Aqua': '#06b6d4'
-    };
-    return map[colorName] || '#fff';
-  };
-
   const generateStandardFibers = (count: number): FiberStrand[] => {
       const arr: FiberStrand[] = [];
       for (let i = 0; i < count; i++) {
@@ -73,55 +41,71 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
       return arr;
   };
 
-  // --- TUBE LOGIC ---
-  const getTubeConfig = (total: number) => {
-      if (total >= 144) return { fibersPerTube: 12 };
-      if (total >= 96) return { fibersPerTube: 12 };
-      if (total >= 48) return { fibersPerTube: 12 };
-      if (total === 24) return { fibersPerTube: 6 }; // Often 4x6 for 24FO
-      if (total === 18) return { fibersPerTube: 6 };
-      return { fibersPerTube: 12 };
+  // Construct current liaison object for child components context
+  const currentLiaisonObj: Liaison = {
+      id: initialLiaison?.id || `liaison-${Date.now()}`,
+      name,
+      type: LiaisonType.FIBER,
+      status,
+      category,
+      startCoordinates: initialLiaison?.startCoordinates || { lat: 0, lng: 0 },
+      endCoordinates: initialLiaison?.endCoordinates || { lat: 0, lng: 0 },
+      distanceKm,
+      sections,
+      infrastructurePoints: infraPoints,
+      fiberCount: sections.length > 0 ? sections[0].fiberCount : 12,
+      controlledByCttId: initialLiaison?.controlledByCttId || 'ctt-mbalmayo', // Default to current CTT context
+      associatedBtsIds: initialLiaison?.associatedBtsIds || []
+  };
+  
+  // --- NAVIGATION STATE ---
+  const [activeViewId, setActiveViewId] = useState<string | null>(null);
+
+  // --- DERIVED STATE ---
+  const activeSection = activeViewId ? sections.find(s => s.id === activeViewId) : null;
+  const activeFiberCount = activeSection ? activeSection.fiberCount : (currentLiaisonObj.fiberCount || 12);
+  
+  // FIX 1: Auto-generate strands if missing in data but section exists (Fixes "Aucune donnée")
+  const activeStrands = activeSection 
+    ? (activeSection.fiberStrands && activeSection.fiberStrands.length > 0 
+        ? activeSection.fiberStrands 
+        : generateStandardFibers(activeSection.fiberCount)) 
+    : (initialLiaison?.fiberStrands || []);
+
+  // Modals state
+  const [editingSection, setEditingSection] = useState<CableSection | null>(null);
+  const [editingInfra, setEditingInfra] = useState<InfrastructurePoint | null>(null);
+
+  const getFiberColorHex = (colorName: string) => {
+    const map: Record<string, string> = {
+      'Bleu': '#3b82f6', 'Orange': '#f97316', 'Vert': '#22c55e', 'Marron': '#854d0e',
+      'Gris': '#94a3b8', 'Blanc': '#f8fafc', 'Rouge': '#ef4444', 'Noir': '#000000',
+      'Jaune': '#eab308', 'Violet': '#a855f7', 'Rose': '#ec4899', 'Aqua': '#06b6d4'
+    };
+    return map[colorName] || '#fff';
   };
 
-  const tubeConfig = getTubeConfig(activeFiberCount);
+  const tubeConfig = { fibersPerTube: activeFiberCount >= 18 ? (activeFiberCount % 12 === 0 ? 12 : 6) : 12 }; // Simple approximation
   const tubesCount = Math.ceil(activeFiberCount / tubeConfig.fibersPerTube);
 
   const handleStrandChange = (id: string, field: keyof FiberStrand, value: any) => {
       if (activeSection) {
-          // Update Section Strands
           const updatedStrands = activeStrands.map(s => s.id === id ? { ...s, [field]: value } : s);
           setSections(prev => prev.map(sec => sec.id === activeSection.id ? { ...sec, fiberStrands: updatedStrands } : sec));
-      } else {
-          // Update Global Strands
-          // Note: In strict mode, Global Strands should be read-only derived from sections, 
-          // but for flexibility we allow editing the "Conceptual" end-to-end view.
-          console.warn("Editing Global Strands - typically derived from patches");
       }
   };
 
   const handleSaveLiaison = () => {
-    const updated: Liaison = {
-      ...liaison,
-      name,
-      status,
-      distanceKm: parseFloat(distanceKm.toString()),
-      // Global fiberCount might differ from sections, but usually matches the "Max"
-      sections,
-      infrastructurePoints: infraPoints
-    };
-    onSave(updated);
+    onSave(currentLiaisonObj);
   };
 
-  // Section Handlers
   const handleSaveSection = (updatedSection: CableSection) => {
-      // If capacity changed, regenerate strands if needed (simple logic)
       let finalSection = updatedSection;
       if (updatedSection.fiberCount !== (sections.find(s => s.id === updatedSection.id)?.fiberCount || 0)) {
            if (!updatedSection.fiberStrands || updatedSection.fiberStrands.length !== updatedSection.fiberCount) {
                finalSection = { ...updatedSection, fiberStrands: generateStandardFibers(updatedSection.fiberCount) };
            }
       }
-
       if (sections.find(s => s.id === finalSection.id)) {
           setSections(prev => prev.map(s => s.id === finalSection.id ? finalSection : s));
       } else {
@@ -130,15 +114,18 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
       setEditingSection(null);
   };
 
-  const handleCreateSection = () => {
-      setEditingSection({
+  const handleCreateSection = (startNodeId?: string) => {
+      // FIX 2: Better naming convention
+      const newSec: CableSection = {
           id: `sec-${Date.now()}`,
-          name: `Nouveau Tronçon ${sections.length + 1}`,
+          name: startNodeId ? `Nouveau Câble (Départ)` : `Nouveau Tronçon ${sections.length + 1}`,
           fiberCount: 12, 
           cableType: 'Standard Souterrain',
           lengthKm: 0,
+          startPointId: startNodeId,
           fiberStrands: generateStandardFibers(12)
-      });
+      };
+      setEditingSection(newSec);
   };
 
   const handleSaveInfra = (updatedInfra: InfrastructurePoint) => {
@@ -155,8 +142,8 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
           id: `infra-${Date.now()}`,
           name: 'Nouvelle Chambre',
           type: InfrastructureType.CHAMBRE,
-          coordinates: liaison.endCoordinates, 
-          parentLiaisonId: liaison.id,
+          coordinates: { lat: 0, lng: 0 }, 
+          parentLiaisonId: currentLiaisonObj.id,
           description: ''
       });
   };
@@ -172,7 +159,7 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
               <span className="w-8 h-8 rounded bg-cyan-600 flex items-center justify-center">
                 <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
               </span>
-              {name}
+              {isNew ? 'Création de Liaison' : `Édition: ${name}`}
               <span className="text-sm font-normal text-slate-400 ml-2 border-l border-slate-600 pl-2">
                   {status} • {distanceKm} km
               </span>
@@ -186,20 +173,33 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
           {/* LEFT COLUMN: NAVIGATION & STRUCTURE */}
           <div className="w-1/3 bg-slate-900 border-r border-slate-700 flex flex-col overflow-y-auto">
              
-             {/* General Config (Collapsed by default maybe?) */}
-             <div className="p-4 border-b border-slate-800">
-                 <h3 className="text-xs font-bold text-blue-400 uppercase mb-2">Configuration Liaison</h3>
+             {/* General Config */}
+             <div className="p-4 border-b border-slate-800 space-y-3">
+                 <h3 className="text-xs font-bold text-blue-400 uppercase">Configuration Liaison</h3>
+                 <div>
+                    <label className="text-[10px] text-slate-500 uppercase">Nom</label>
+                    <input value={name} onChange={e => setName(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded p-1.5 text-sm text-white focus:border-cyan-500 outline-none" placeholder="Ex: Backbone Mbalmayo-Ebolowa" />
+                 </div>
                  <div className="grid grid-cols-2 gap-2">
-                    <input value={name} onChange={e => setName(e.target.value)} className="bg-slate-800 border border-slate-700 rounded p-1 text-sm text-white" />
-                    <input type="number" value={distanceKm} onChange={e => setDistanceKm(parseFloat(e.target.value))} className="bg-slate-800 border border-slate-700 rounded p-1 text-sm text-white" />
+                    <div>
+                        <label className="text-[10px] text-slate-500 uppercase">Distance (Km)</label>
+                        <input type="number" value={distanceKm} onChange={e => setDistanceKm(parseFloat(e.target.value))} className="w-full bg-slate-800 border border-slate-700 rounded p-1.5 text-sm text-white" />
+                    </div>
+                    <div>
+                        <label className="text-[10px] text-slate-500 uppercase">Catégorie</label>
+                        <select value={category} onChange={e => setCategory(e.target.value as LiaisonCategory)} className="w-full bg-slate-800 border border-slate-700 rounded p-1.5 text-sm text-white">
+                            <option value={LiaisonCategory.BACKBONE}>Backbone</option>
+                            <option value={LiaisonCategory.LAST_MILE}>Last Mile</option>
+                        </select>
+                    </div>
                  </div>
              </div>
 
-             {/* SECTION LIST (The "Navigator") */}
+             {/* SECTION LIST */}
              <div className="flex-1 p-4 space-y-4">
                  <div className="flex justify-between items-center">
                     <h3 className="text-xs font-bold text-teal-400 uppercase">Architecture & Tronçons</h3>
-                    <button onClick={handleCreateSection} className="text-[10px] bg-teal-700 hover:bg-teal-600 text-white px-2 py-0.5 rounded">+ Tronçon</button>
+                    <button onClick={() => handleCreateSection()} className="text-[10px] bg-teal-700 hover:bg-teal-600 text-white px-2 py-0.5 rounded">+ Tronçon</button>
                  </div>
                  
                  {/* Virtual "Global" View */}
@@ -211,7 +211,6 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
                          <span className="font-bold text-sm text-white">VUE GLOBALE (Bout-en-Bout)</span>
                          <span className="text-[10px] bg-slate-900 px-1 rounded text-slate-400">Théorique</span>
                      </div>
-                     <div className="text-xs text-slate-500 mt-1">Résumé de la capacité maximale et des services traversants.</div>
                  </div>
 
                  {/* Real Sections */}
@@ -220,9 +219,7 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
                          const isActive = activeViewId === sec.id;
                          return (
                             <div key={sec.id} className="relative pl-4 border-l-2 border-slate-700">
-                                {/* Connector Line */}
                                 <div className="absolute -left-[9px] top-4 w-4 h-0.5 bg-slate-700"></div>
-
                                 <div 
                                     onClick={() => setActiveViewId(sec.id)}
                                     className={`p-2 rounded border cursor-pointer group ${isActive ? 'bg-teal-900/20 border-teal-500' : 'bg-slate-800 border-slate-700 hover:border-slate-500'}`}
@@ -254,10 +251,10 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
                         <button onClick={handleCreateInfra} className="text-[10px] bg-orange-700 hover:bg-orange-600 text-white px-2 py-0.5 rounded">+ Infra</button>
                      </div>
                      <div className="space-y-2">
-                        {infraPoints.map((infra, idx) => (
+                        {infraPoints.map((infra) => (
                             <div key={infra.id} onClick={() => setEditingInfra(infra)} className="bg-slate-800 p-2 rounded border border-slate-700 hover:border-orange-500 cursor-pointer flex justify-between items-center">
                                 <div className="flex items-center gap-2">
-                                    <div className={`w-2 h-2 rotate-45 ${infra.type === InfrastructureType.CHAMBRE ? 'bg-purple-500' : 'bg-orange-500'}`}></div>
+                                    <div className={`w-2 h-2 rotate-45 ${infra.category === 'ARTERE' ? 'bg-red-500' : (infra.category === 'SEMI_ARTERE' ? 'bg-orange-500' : 'bg-purple-500')}`}></div>
                                     <div className="text-xs text-slate-300">{infra.name}</div>
                                 </div>
                                 <span className="text-[9px] bg-slate-900 px-1 rounded text-orange-300">Éditer</span>
@@ -372,21 +369,21 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison, onSave, onClose }) =
           <button onClick={handleSaveLiaison} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded shadow-lg">Enregistrer Tout</button>
         </div>
 
-        {/* Sub-Modals */}
+        {/* Sub-Modals - FIX 3: Reordered so TronconEditor is ON TOP of ManchonEditor if triggered from it */}
+        {editingInfra && (
+            <ManchonEditor 
+                infra={editingInfra}
+                liaisonContext={currentLiaisonObj} // Pass full context for topology
+                onSave={handleSaveInfra} 
+                onAddSection={(nodeId) => handleCreateSection(nodeId)} // Callback to create cable
+                onClose={() => setEditingInfra(null)} 
+            />
+        )}
         {editingSection && (
             <TronconEditor 
                 section={editingSection} 
                 onSave={handleSaveSection} 
                 onClose={() => setEditingSection(null)} 
-            />
-        )}
-        {editingInfra && (
-            <ManchonEditor 
-                infra={editingInfra}
-                // We pass the liaison to help the ManchonEditor find adjacent sections
-                liaisonContext={liaison}
-                onSave={handleSaveInfra} 
-                onClose={() => setEditingInfra(null)} 
             />
         )}
 

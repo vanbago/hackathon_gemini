@@ -7,7 +7,6 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
  * Parses a raw WhatsApp export text file into structured ChatMessage objects.
- * (Fonction conservée pour compatibilité éventuelle avec imports futurs)
  */
 export const parseWhatsAppExport = (text: string): ChatMessage[] => {
     const lines = text.split('\n');
@@ -29,7 +28,19 @@ export const parseWhatsAppExport = (text: string): ChatMessage[] => {
     return messages;
 };
 
-// ... (Other extract functions kept as is) ...
+// Helper to safely parse JSON from AI which might wrap it in markdown code blocks
+const safeJsonParse = (text: string | undefined) => {
+    if (!text) return null;
+    try {
+        // Remove markdown code blocks if present (e.g. ```json ... ```)
+        const cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        return JSON.parse(cleaned);
+    } catch (e) {
+        console.error("Gemini JSON Parse Error:", e, "Raw Text:", text);
+        return null;
+    }
+};
+
 export const extractActivityFromText = async (text: string): Promise<Partial<Activity> | null> => {
   try {
     const response = await ai.models.generateContent({
@@ -49,8 +60,11 @@ export const extractActivityFromText = async (text: string): Promise<Partial<Act
         }
       }
     });
-    return response.text ? JSON.parse(response.text) : null;
-  } catch (error) { return null; }
+    return safeJsonParse(response.text);
+  } catch (error) { 
+      console.error("Gemini Extract Error:", error);
+      return null; 
+  }
 };
 
 export const analyzeImageContext = async (base64Image: string, mimeType: string): Promise<any> => {
@@ -81,8 +95,11 @@ export const analyzeImageContext = async (base64Image: string, mimeType: string)
                 }
             }
         });
-        return response.text ? JSON.parse(response.text) : null;
-    } catch (error) { return null; }
+        return safeJsonParse(response.text);
+    } catch (error) { 
+        console.error("Gemini Vision Error:", error);
+        return null; 
+    }
 };
 
 interface ChatContextData {
@@ -92,10 +109,6 @@ interface ChatContextData {
   activities: Activity[];
 }
 
-/**
- * GÉNÉRATION DU CONTEXTE ARCHITECTURE POUR L'IA
- * Cette fonction transforme la base de données brute en un manuel technique lisible par l'IA.
- */
 const generateSystemInstruction = (data: ChatContextData): string => {
   // 1. Liste des Sites avec Équipements
   const sitesInfo = data.btsStations.map(s => {
@@ -103,19 +116,16 @@ const generateSystemInstruction = (data: ChatContextData): string => {
       return `- SITE: ${s.name} (${s.type}). Coords: [${s.coordinates.lat}, ${s.coordinates.lng}]. Équipements: ${equipementsList}.`;
   }).join('\n');
 
-  // 2. Liste des Liaisons Détaillées (Tronçons, Fibres, Infra)
+  // 2. Liste des Liaisons Détaillées
   const liaisonsInfo = data.liaisons.map(l => {
-      // Détail des tronçons
       const sectionsInfo = l.sections?.map((sec, idx) => 
           `   * Tronçon #${idx+1} "${sec.name}": ${sec.fiberCount}FO (${sec.cableType}), ${sec.lengthKm}km.`
       ).join('\n') || '   * Pas de tronçons définis.';
       
-      // Détail des infrastructures (Manchons/Chambres)
       const infraInfo = l.infrastructurePoints?.map(inf => 
           `   * Infra: ${inf.name} (${inf.type}) à [${inf.coordinates.lat}, ${inf.coordinates.lng}].`
       ).join('\n') || '';
 
-      // Détail sommaire des brins actifs
       const usedStrands = l.fiberStrands?.filter(f => f.status === 'USE').length || 0;
       const totalStrands = l.fiberCount || 0;
 
@@ -176,6 +186,6 @@ export const chatWithAgent = async (
     return result.text;
   } catch (error) {
     console.error("Chat Error", error);
-    return "Désolé, je ne peux pas accéder aux données d'architecture pour le moment.";
+    return "Désolé, je ne peux pas accéder aux données d'architecture pour le moment (Erreur API ou Réseau).";
   }
 }

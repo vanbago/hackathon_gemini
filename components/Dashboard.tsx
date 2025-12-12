@@ -21,6 +21,7 @@ const Dashboard: React.FC = () => {
   
   // UI State
   const [editingLiaison, setEditingLiaison] = useState<Liaison | null>(null);
+  const [isCreatingLiaison, setIsCreatingLiaison] = useState(false);
   const [editingNode, setEditingNode] = useState<{ node: Bts | Ctt, type: 'BTS' | 'CTT' } | null>(null); 
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -47,37 +48,60 @@ const Dashboard: React.FC = () => {
     }
   }, [chatHistory]);
 
+  // Helper for notifications
+  const addNotification = (title: string, message: string, type: 'SUCCESS' | 'ERROR' | 'INFO' | 'WARNING') => {
+      const notif: AppNotification = {
+          id: Date.now().toString(),
+          title,
+          message,
+          type,
+          date: new Date().toISOString(),
+          isRead: false
+      };
+      setNotifications(prev => [notif, ...prev]);
+  };
+
   // --- INITIAL DATA LOADING ---
   useEffect(() => {
     const initApp = async () => {
-        // 1. Check Backend Health (just for UI indicator)
-        const isAlive = await apiService.checkHealth();
-        setIsBackendConnected(isAlive);
+        try {
+            // 1. Check Backend Health (just for UI indicator)
+            const isAlive = await apiService.checkHealth();
+            setIsBackendConnected(isAlive);
 
-        // 2. Try to load State (Remote -> Local Fallback)
-        const savedState = await apiService.loadFullState();
+            // 2. Try to load State (Remote -> Local Fallback)
+            const savedState = await apiService.loadFullState();
 
-        if (savedState && (savedState.ctt || savedState.btsStations.length > 0)) {
-            console.log("Loaded saved state successfully.");
-            setActivities(savedState.activities || []);
-            setCtt(savedState.ctt || null);
-            setBtsStations(savedState.btsStations || []);
-            setLiaisons(savedState.liaisons || []);
-            setTickets(savedState.tickets || []);
-        } else {
-            console.log("No saved state found (New Deployment). Seeding defaults...");
-            const defaultState = initializeDefaultState();
-            
-            // Persist defaults immediately to DB/Local
-            await apiService.initializeDefaults(defaultState);
-            
-            setActivities(defaultState.activities);
-            setCtt(defaultState.ctt);
-            setBtsStations(defaultState.btsStations);
-            setLiaisons(defaultState.liaisons);
-            setTickets(defaultState.tickets);
+            if (savedState && (savedState.ctt || savedState.btsStations.length > 0)) {
+                console.log("Loaded saved state successfully.");
+                setActivities(savedState.activities || []);
+                setCtt(savedState.ctt || null);
+                setBtsStations(savedState.btsStations || []);
+                setLiaisons(savedState.liaisons || []);
+                setTickets(savedState.tickets || []);
+                
+                if (!isAlive) {
+                    addNotification("Mode Hors Ligne", "Connexion serveur échouée. Chargement des données locales.", "WARNING");
+                }
+            } else {
+                console.log("No saved state found (New Deployment). Seeding defaults...");
+                const defaultState = initializeDefaultState();
+                
+                // Persist defaults immediately to DB/Local
+                await apiService.initializeDefaults(defaultState);
+                
+                setActivities(defaultState.activities);
+                setCtt(defaultState.ctt);
+                setBtsStations(defaultState.btsStations);
+                setLiaisons(defaultState.liaisons);
+                setTickets(defaultState.tickets);
+            }
+        } catch (e) {
+            console.error("Init Error", e);
+            addNotification("Erreur Critique", "Impossible de charger l'application.", "ERROR");
+        } finally {
+            setIsDatabaseLoading(false);
         }
-        setIsDatabaseLoading(false);
     };
 
     initApp();
@@ -100,6 +124,7 @@ const Dashboard: React.FC = () => {
     } catch (err) {
         console.error(err);
         setChatHistory(prev => [...prev, { role: "model", parts: [{ text: "Erreur de connexion à l'IA." }] }]);
+        addNotification("Erreur IA", "L'assistant n'a pas pu traiter votre demande.", "ERROR");
     } finally {
         setIsChatting(false);
     }
@@ -115,26 +140,26 @@ const Dashboard: React.FC = () => {
   const handleSaveLiaison = async (updatedLiaison: Liaison) => {
     setIsSaving(true);
     try {
-        // 1. Update UI immediately
-        setLiaisons(prev => prev.map(l => l.id === updatedLiaison.id ? updatedLiaison : l));
-        setEditingLiaison(null);
+        // 1. Persist to SQLite / LocalStorage
+        const result = await apiService.saveLiaison(updatedLiaison);
         
-        // 2. Persist to SQLite / LocalStorage
-        await apiService.saveLiaison(updatedLiaison);
+        if (!result) throw new Error("Backend save failed");
 
-        const notif: AppNotification = {
-            id: Date.now().toString(),
-            title: 'Données Sauvegardées',
-            message: `La liaison "${updatedLiaison.name}" et ses torons ont été enregistrés avec succès.`,
-            type: 'SUCCESS',
-            date: new Date().toISOString(),
-            isRead: false
-        };
-        setNotifications(prev => [notif, ...prev]);
+        // 2. Update UI only if save successful (or local fallback worked)
+        if (liaisons.find(l => l.id === updatedLiaison.id)) {
+            setLiaisons(prev => prev.map(l => l.id === updatedLiaison.id ? updatedLiaison : l));
+        } else {
+            setLiaisons(prev => [...prev, updatedLiaison]);
+        }
+        
+        setEditingLiaison(null);
+        setIsCreatingLiaison(false);
+        
+        addNotification('Sauvegarde Réussie', `La liaison "${updatedLiaison.name}" a été enregistrée.`, 'SUCCESS');
         triggerAiSync();
     } catch (error) {
         console.error("Save Error", error);
-        alert("Erreur lors de la sauvegarde.");
+        addNotification('Erreur de Sauvegarde', "Impossible d'enregistrer la liaison. Vérifiez la connexion.", 'ERROR');
     } finally {
         setIsSaving(false);
     }
@@ -143,7 +168,9 @@ const Dashboard: React.FC = () => {
   const handleSaveNode = async (updatedNode: Bts | Ctt) => {
       setIsSaving(true);
       try {
-        // 1. Update UI immediately
+        const result = await apiService.saveSite(updatedNode);
+        if (!result) throw new Error("Backend save failed");
+
         if (editingNode?.type === 'CTT') {
             setCtt(updatedNode as Ctt);
         } else {
@@ -151,22 +178,11 @@ const Dashboard: React.FC = () => {
         }
         setEditingNode(null);
 
-        // 2. Persist to SQLite / LocalStorage
-        await apiService.saveSite(updatedNode);
-
-        const notif: AppNotification = {
-            id: Date.now().toString(),
-            title: 'Données Sauvegardées',
-            message: `Le site "${updatedNode.name}" et ses équipements ont été enregistrés.`,
-            type: 'SUCCESS',
-            date: new Date().toISOString(),
-            isRead: false
-        };
-        setNotifications(prev => [notif, ...prev]);
+        addNotification('Sauvegarde Réussie', `Le site "${updatedNode.name}" a été mis à jour.`, 'SUCCESS');
         triggerAiSync();
       } catch (error) {
           console.error("Save Error", error);
-          alert("Erreur lors de la sauvegarde du nœud.");
+          addNotification('Erreur de Sauvegarde', "Impossible d'enregistrer le nœud.", 'ERROR');
       } finally {
           setIsSaving(false);
       }
@@ -195,15 +211,7 @@ const Dashboard: React.FC = () => {
             const analysis = await analyzeImageContext(base64Data, file.type);
             
             if (analysis) {
-                const newNotif: AppNotification = {
-                    id: Date.now().toString(),
-                    title: `Média Analysé: ${analysis.title}`,
-                    message: analysis.description,
-                    type: 'INFO',
-                    date: new Date().toISOString(),
-                    isRead: false
-                };
-                setNotifications(prev => [newNotif, ...prev]);
+                addNotification(`Média Analysé: ${analysis.title}`, analysis.description, 'INFO');
 
                 if (analysis.detectedCoordinates || analysis.detectedInfrastructure) {
                    const coords = analysis.detectedCoordinates || { lat: 3.5170, lng: 11.5012 };
@@ -221,17 +229,20 @@ const Dashboard: React.FC = () => {
                    };
                    
                    setActivities(prev => [...prev, newActivity]);
-                   // Persist
                    await apiService.saveActivity(newActivity);
                    triggerAiSync();
                 }
             } else {
-                alert("Impossible d'analyser l'image.");
+                addNotification('Échec Analyse', "L'IA n'a pas pu extraire de données de cette image.", 'WARNING');
             }
             setIsProcessing(false);
         };
+        reader.onerror = () => {
+            throw new Error("Erreur de lecture du fichier");
+        }
     } catch (error) {
         console.error("File processing error", error);
+        addNotification('Erreur Import', "Impossible de lire le fichier.", 'ERROR');
         setIsProcessing(false);
     }
   };
@@ -283,6 +294,11 @@ const Dashboard: React.FC = () => {
                 disabled={isProcessing}
                 className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded text-xs transition-colors flex items-center gap-2 font-bold shadow-lg shadow-indigo-900/20 disabled:opacity-50">
                 {isProcessing ? 'Analyse...' : 'Importer Plan/Image'}
+            </button>
+            <button 
+                onClick={() => setIsCreatingLiaison(true)}
+                className="bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded text-xs transition-colors flex items-center gap-2 font-bold shadow-lg shadow-teal-900/20">
+                + Nouvelle Liaison
             </button>
         </div>
       </header>
@@ -396,12 +412,12 @@ const Dashboard: React.FC = () => {
             </form>
         </div>
 
-        {/* Modal: Fiber Editor */}
-        {editingLiaison && (
+        {/* Modal: Fiber Editor for Existing OR New Liaison */}
+        {(editingLiaison || isCreatingLiaison) && (
           <FiberEditor 
-            liaison={editingLiaison} 
+            liaison={editingLiaison} // Pass null if creating
             onSave={handleSaveLiaison} 
-            onClose={() => setEditingLiaison(null)} 
+            onClose={() => { setEditingLiaison(null); setIsCreatingLiaison(false); }} 
           />
         )}
 
