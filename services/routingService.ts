@@ -3,6 +3,8 @@ import { Coordinates } from "../types";
 
 // OSRM Public API endpoint
 const OSRM_API_URL = 'https://router.project-osrm.org/route/v1/driving';
+// Nominatim API for Geocoding (OpenStreetMap)
+const NOMINATIM_API_URL = 'https://nominatim.openstreetmap.org/search';
 
 /**
  * Fetches the road path between start and end coordinates, optionally passing through waypoints.
@@ -41,4 +43,59 @@ export const getRoadPath = async (start: Coordinates, end: Coordinates, waypoint
     console.warn("Error fetching road path:", error);
     return null; // Fallback to straight line handled by consumer
   }
+};
+
+/**
+ * Gets route details including distance (meters) and geometry.
+ */
+export const getRouteStats = async (start: Coordinates, end: Coordinates): Promise<{ distanceKm: number, path: [number, number][] } | null> => {
+    try {
+        const startStr = `${start.lng},${start.lat}`;
+        const endStr = `${end.lng},${end.lat}`;
+        const url = `${OSRM_API_URL}/${startStr};${endStr}?overview=full&geometries=geojson`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+            const route = data.routes[0];
+            const coordinates = route.geometry.coordinates.map((coord: number[]) => [coord[1], coord[0]]);
+            return {
+                distanceKm: parseFloat((route.distance / 1000).toFixed(3)), // Convert meters to km
+                path: coordinates as [number, number][]
+            };
+        }
+        return null;
+    } catch (error) {
+        console.error("Route stats error", error);
+        return null;
+    }
+};
+
+/**
+ * Search for a location name (City, Street, Place) and returns possible coordinates.
+ */
+export const searchLocation = async (query: string): Promise<{ name: string, lat: number, lng: number }[]> => {
+    try {
+        if (!query || query.length < 3) return [];
+        
+        // Bounding box for Cameroon roughly (optional but helps precision)
+        // viewbox=8.4,1.6,16.2,13.1
+        const url = `${NOMINATIM_API_URL}?format=json&q=${encodeURIComponent(query)}&viewbox=8.4,1.6,16.2,13.1&bounded=0&limit=5`;
+        
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (Array.isArray(data)) {
+            return data.map((item: any) => ({
+                name: item.display_name,
+                lat: parseFloat(item.lat),
+                lng: parseFloat(item.lon)
+            }));
+        }
+        return [];
+    } catch (error) {
+        console.error("Location search error", error);
+        return [];
+    }
 };

@@ -118,59 +118,75 @@ export const apiService = {
     },
 
     // --- PERSISTENCE METHODS (Hybrid: Try Remote, Always Save Local) ---
+    // UPDATED: Now returns { success: true, offline: true } instead of null on fetch error
 
     saveSite: async (site: Bts | Ctt) => {
-        updateLocalItem('sites', site); // Always save local first for speed
+        updateLocalItem('sites', site); // Always save local first
         try {
-            return await fetch(`${API_URL}/sites`, {
+            const res = await fetch(`${API_URL}/sites`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(site)
             });
-        } catch (e) { return null; }
+            return res.ok ? await res.json() : { success: true, offline: true };
+        } catch (e) { 
+            return { success: true, offline: true }; 
+        }
     },
 
     saveLiaison: async (liaison: Liaison) => {
         updateLocalItem('liaisons', liaison);
         try {
-            return await fetch(`${API_URL}/liaisons`, {
+            const res = await fetch(`${API_URL}/liaisons`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(liaison)
             });
-        } catch (e) { return null; }
+            return res.ok ? await res.json() : { success: true, offline: true };
+        } catch (e) { 
+            return { success: true, offline: true }; 
+        }
     },
 
     saveActivity: async (activity: Activity) => {
         updateLocalItem('activities', activity);
         try {
-            return await fetch(`${API_URL}/activities`, {
+            const res = await fetch(`${API_URL}/activities`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(activity)
             });
-        } catch (e) { return null; }
+            return res.ok ? await res.json() : { success: true, offline: true };
+        } catch (e) { 
+            return { success: true, offline: true }; 
+        }
     },
 
     saveTicket: async (ticket: Ticket) => {
         updateLocalItem('tickets', ticket);
         try {
-            return await fetch(`${API_URL}/tickets`, {
+            const res = await fetch(`${API_URL}/tickets`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(ticket)
             });
-        } catch (e) { return null; }
+            return res.ok ? await res.json() : { success: true, offline: true };
+        } catch (e) { 
+            return { success: true, offline: true }; 
+        }
     },
 
     saveMessage: async (message: ChatMessage) => {
         updateLocalItem('messages', message);
         try {
-            return await fetch(`${API_URL}/messages`, {
+            const res = await fetch(`${API_URL}/messages`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(message)
             });
-        } catch (e) { return null; }
+            return res.ok ? await res.json() : { success: true, offline: true };
+        } catch (e) { 
+            return { success: true, offline: true }; 
+        }
     }
 };

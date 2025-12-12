@@ -1,16 +1,17 @@
 
 import React, { useState, useEffect } from 'react';
-import { Liaison, FiberStrand, InfrastructureType, LiaisonStatus, LiaisonCategory, CableSection, InfrastructurePoint, LiaisonType, Operator } from '../types';
+import { Liaison, FiberStrand, InfrastructureType, LiaisonStatus, LiaisonCategory, CableSection, InfrastructurePoint, LiaisonType, Operator, Bts, Ctt } from '../types';
 import TronconEditor from './TronconEditor';
 import ManchonEditor from './ManchonEditor';
 
 interface FiberEditorProps {
   liaison: Liaison | null; // Null implies creating a new liaison
+  availableNodes: (Bts | Ctt)[]; // NEW: List of available sites for routing
   onSave: (updatedLiaison: Liaison) => void;
   onClose: () => void;
 }
 
-const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSave, onClose }) => {
+const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, availableNodes, onSave, onClose }) => {
   // --- STATE INIT ---
   const isNew = !initialLiaison;
   
@@ -96,7 +97,25 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSa
   };
 
   const handleSaveLiaison = () => {
-    onSave(currentLiaisonObj);
+    // Determine overall Start/End coordinates based on first/last sections if available
+    let finalStart = currentLiaisonObj.startCoordinates;
+    let finalEnd = currentLiaisonObj.endCoordinates;
+    
+    // Auto-update global coordinates based on sections if newly created
+    if (sections.length > 0) {
+         if (sections[0].startCoordinate) finalStart = sections[0].startCoordinate;
+         if (sections[sections.length - 1].endCoordinate) finalEnd = sections[sections.length - 1].endCoordinate;
+    }
+    
+    // Auto-sum distance
+    const totalDist = sections.reduce((acc, sec) => acc + (sec.lengthKm || 0), 0);
+
+    onSave({
+        ...currentLiaisonObj,
+        startCoordinates: finalStart,
+        endCoordinates: finalEnd,
+        distanceKm: totalDist > 0 ? parseFloat(totalDist.toFixed(3)) : distanceKm
+    });
   };
 
   const handleSaveSection = (updatedSection: CableSection) => {
@@ -111,6 +130,12 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSa
       } else {
           setSections(prev => [...prev, finalSection]);
       }
+      
+      // Update global distance preview
+      if(finalSection.lengthKm) {
+          setDistanceKm(prev => prev + (finalSection.lengthKm || 0));
+      }
+
       setEditingSection(null);
   };
 
@@ -161,7 +186,7 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSa
               </span>
               {isNew ? 'Création de Liaison' : `Édition: ${name}`}
               <span className="text-sm font-normal text-slate-400 ml-2 border-l border-slate-600 pl-2">
-                  {status} • {distanceKm} km
+                  {status} • {distanceKm.toFixed(3)} km
               </span>
             </h2>
           </div>
@@ -182,7 +207,7 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSa
                  </div>
                  <div className="grid grid-cols-2 gap-2">
                     <div>
-                        <label className="text-[10px] text-slate-500 uppercase">Distance (Km)</label>
+                        <label className="text-[10px] text-slate-500 uppercase">Distance Totale (Km)</label>
                         <input type="number" value={distanceKm} onChange={e => setDistanceKm(parseFloat(e.target.value))} className="w-full bg-slate-800 border border-slate-700 rounded p-1.5 text-sm text-white" />
                     </div>
                     <div>
@@ -382,6 +407,7 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, onSa
         {editingSection && (
             <TronconEditor 
                 section={editingSection} 
+                availableNodes={availableNodes} // PASS DOWN
                 onSave={handleSaveSection} 
                 onClose={() => setEditingSection(null)} 
             />

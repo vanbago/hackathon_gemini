@@ -88,6 +88,15 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
       setSelectedIncomingStrand(prev => prev === strandId ? null : strandId);
   };
 
+  const handleIncomingSectionChange = (val: string) => {
+      if (val === '__NEW__') {
+          // Trigger add section logic, treating this node as start (simplified, user can edit endpoints in modal)
+          onAddSection(infra.id); 
+      } else {
+          setIncomingSectionId(val);
+      }
+  };
+
   const handleOutgoingClick = (outgoingStrandId: string) => {
       if (!selectedIncomingStrand) return;
 
@@ -122,9 +131,6 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
 
   const isConnected = (incomingId: string) => connections.some(c => c.incomingStrandId === incomingId);
   
-  // Check if an outgoing strand is connected (reverse lookup)
-  const isOutgoingConnected = (outgoingId: string) => connections.some(c => c.outgoingStrandId === outgoingId);
-
   const autoSplice = () => {
       if (!incomingSection?.fiberStrands) return;
       const targetSection = outgoingSections.find(s => s.id === activeOutgoingTabId);
@@ -145,8 +151,6 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
       setConnections(newConns);
   };
 
-  // CHECK: Semi-Artere Logic
-  // A semi-artere implies: 1 Input + (1 Output Backbone Continuation + 1 Output Piquage) = Minimum 2 Outputs
   const isSemiArtereInvalid = category === InfrastructureCategory.SEMI_ARTERE && outgoingSections.length < 2;
 
   return (
@@ -219,23 +223,24 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                                     <span className="text-[9px] bg-blue-900/50 text-blue-300 px-1 rounded border border-blue-500/30">AMONT</span>
                                 </div>
                                 
-                                {/* CABLE SELECTOR */}
+                                {/* CABLE SELECTOR WITH NEW OPTION */}
                                 <select 
                                     value={incomingSectionId} 
-                                    onChange={(e) => setIncomingSectionId(e.target.value)}
+                                    onChange={(e) => handleIncomingSectionChange(e.target.value)}
                                     className="w-full bg-slate-800 border border-slate-600 rounded p-1.5 text-xs text-white font-bold focus:border-blue-500 outline-none mb-1"
                                 >
+                                    <option value="" disabled>-- Choisir Câble --</option>
                                     {connectedSections.map(s => (
                                         <option key={s.id} value={s.id}>{s.name} ({s.fiberCount} FO)</option>
                                     ))}
-                                    {connectedSections.length === 0 && <option>Aucun câble connecté</option>}
+                                    <option value="__NEW__" className="text-green-400 font-bold bg-slate-700">++ Créer Nouveau Câble ++</option>
                                 </select>
                                 
                                 {incomingSection && <div className="text-[10px] text-slate-500">{incomingSection.cableType}</div>}
                             </div>
                             
                             <div className="p-2 space-y-1">
-                                {!incomingSection && <div className="p-4 text-center text-xs text-slate-500 italic">Veuillez connecter des câbles à ce manchon.</div>}
+                                {!incomingSection && <div className="p-4 text-center text-xs text-slate-500 italic">Veuillez sélectionner ou créer un câble en amont.</div>}
                                 {incomingSection?.fiberStrands?.map(strand => {
                                     const connected = isConnected(strand.id);
                                     const isSelected = selectedIncomingStrand === strand.id;

@@ -141,9 +141,11 @@ const Dashboard: React.FC = () => {
     setIsSaving(true);
     try {
         // 1. Persist to SQLite / LocalStorage
-        const result = await apiService.saveLiaison(updatedLiaison);
+        const result: any = await apiService.saveLiaison(updatedLiaison);
         
-        if (!result) throw new Error("Backend save failed");
+        // With new API, result is never null/false if local save works.
+        // It returns { success: true, offline: true } if backend fails.
+        if (!result || !result.success) throw new Error("Save failed");
 
         // 2. Update UI only if save successful (or local fallback worked)
         if (liaisons.find(l => l.id === updatedLiaison.id)) {
@@ -155,11 +157,15 @@ const Dashboard: React.FC = () => {
         setEditingLiaison(null);
         setIsCreatingLiaison(false);
         
-        addNotification('Sauvegarde Réussie', `La liaison "${updatedLiaison.name}" a été enregistrée.`, 'SUCCESS');
+        if (result.offline) {
+             addNotification('Mode Hors Ligne', `La liaison "${updatedLiaison.name}" a été sauvegardée localement.`, 'WARNING');
+        } else {
+             addNotification('Sauvegarde Réussie', `La liaison "${updatedLiaison.name}" a été enregistrée.`, 'SUCCESS');
+        }
         triggerAiSync();
     } catch (error) {
         console.error("Save Error", error);
-        addNotification('Erreur de Sauvegarde', "Impossible d'enregistrer la liaison. Vérifiez la connexion.", 'ERROR');
+        addNotification('Erreur de Sauvegarde', "Impossible d'enregistrer la liaison.", 'ERROR');
     } finally {
         setIsSaving(false);
     }
@@ -168,8 +174,8 @@ const Dashboard: React.FC = () => {
   const handleSaveNode = async (updatedNode: Bts | Ctt) => {
       setIsSaving(true);
       try {
-        const result = await apiService.saveSite(updatedNode);
-        if (!result) throw new Error("Backend save failed");
+        const result: any = await apiService.saveSite(updatedNode);
+        if (!result || !result.success) throw new Error("Save failed");
 
         if (editingNode?.type === 'CTT') {
             setCtt(updatedNode as Ctt);
@@ -178,7 +184,11 @@ const Dashboard: React.FC = () => {
         }
         setEditingNode(null);
 
-        addNotification('Sauvegarde Réussie', `Le site "${updatedNode.name}" a été mis à jour.`, 'SUCCESS');
+        if (result.offline) {
+             addNotification('Mode Hors Ligne', `Le site "${updatedNode.name}" a été mis à jour localement.`, 'WARNING');
+        } else {
+             addNotification('Sauvegarde Réussie', `Le site "${updatedNode.name}" a été mis à jour.`, 'SUCCESS');
+        }
         triggerAiSync();
       } catch (error) {
           console.error("Save Error", error);
@@ -257,6 +267,9 @@ const Dashboard: React.FC = () => {
           </div>
       );
   }
+
+  // Combine CTT and BTS for selector
+  const availableNodes = ctt ? [ctt, ...btsStations] : btsStations;
 
   return (
     <div className="h-screen flex flex-col overflow-hidden font-sans bg-slate-950 text-slate-200">
@@ -416,6 +429,7 @@ const Dashboard: React.FC = () => {
         {(editingLiaison || isCreatingLiaison) && (
           <FiberEditor 
             liaison={editingLiaison} // Pass null if creating
+            availableNodes={availableNodes} // PASS AVAILABLE NODES FOR ROUTING
             onSave={handleSaveLiaison} 
             onClose={() => { setEditingLiaison(null); setIsCreatingLiaison(false); }} 
           />
