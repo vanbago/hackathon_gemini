@@ -1,111 +1,87 @@
-import React, { useState, useCallback } from 'react';
+
+import React, { useState, useEffect, useRef } from 'react';
 import MapVisualizer from './MapVisualizer';
-import RealTimeFeed from './RealTimeFeed';
-import { Activity, ActivityStatus, ChatMessage } from '../types';
-import { extractActivityFromText, findLocationCoordinates, generateWeeklyReport, chatWithAgent } from '../services/geminiService';
-import { GoogleGenAI } from "@google/genai";
+import NotificationCenter from './NotificationCenter';
+import FiberEditor from './FiberEditor';
+import NodeEditor from './NodeEditor'; 
+
+import { Activity, ActivityStatus, Ctt, Bts, Liaison, Ticket, AppNotification, DashboardTab } from '../types';
+import { chatWithAgent, analyzeImageContext } from '../services/geminiService';
+import { initializeDefaultState } from '../storageService';
+import { apiService } from '../services/apiService';
 
 const Dashboard: React.FC = () => {
+  // Data State
   const [activities, setActivities] = useState<Activity[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [ctt, setCtt] = useState<Ctt | null>(null);
+  const [btsStations, setBtsStations] = useState<Bts[]>([]);
+  const [liaisons, setLiaisons] = useState<Liaison[]>([]);
+  const [tickets, setTickets] = useState<Ticket[]>([]); 
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  
+  // UI State
+  const [editingLiaison, setEditingLiaison] = useState<Liaison | null>(null);
+  const [editingNode, setEditingNode] = useState<{ node: Bts | Ctt, type: 'BTS' | 'CTT' } | null>(null); 
   const [isProcessing, setIsProcessing] = useState(false);
-  const [reportHtml, setReportHtml] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   
   // Chat Bot State
   const [chatInput, setChatInput] = useState("");
   const [chatHistory, setChatHistory] = useState<{role: string, parts: {text: string}[]}[]>([]);
   const [isChatting, setIsChatting] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  // NEW: Indicator to show AI knowledge is synced
+  const [aiSyncStatus, setAiSyncStatus] = useState<'SYNCED' | 'SYNCING'>('SYNCED');
 
-  // Handle new incoming message from "WhatsApp"
-  const handleNewMessage = useCallback(async (msg: ChatMessage) => {
-    setMessages(prev => [...prev, msg]);
-    
-    // Process with Gemini to see if it contains map-worthy data
-    try {
-      const extracted = await extractActivityFromText(msg.content);
-      
-      if (extracted && extracted.locationName && extracted.title) {
-        // Grounding: Find coordinates
-        const coords = await findLocationCoordinates(extracted.locationName);
-        
-        if (coords) {
-          const newActivity: Activity = {
-            id: Date.now().toString(),
-            title: extracted.title || "Activité Inconnue",
-            description: extracted.description || msg.content,
-            status: (extracted.status as ActivityStatus) || ActivityStatus.IN_PROGRESS,
-            locationName: extracted.locationName,
-            coordinates: coords,
-            timestamp: new Date().toISOString(),
-            source: 'WHATSAPP',
-            technician: extracted.technician || msg.sender
-          };
+  // File Upload State
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-          setActivities(prev => [...prev, newActivity]);
-          
-          // Mark message as processed in UI
-          setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, processed: true } : m));
-        }
-      }
-    } catch (e) {
-      console.error("Auto-process error", e);
+  // Backend Connection State
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
+  const [isDatabaseLoading, setIsDatabaseLoading] = useState(true);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
+  }, [chatHistory]);
+
+  // --- INITIAL DATA LOADING ---
+  useEffect(() => {
+    const initApp = async () => {
+        // 1. Check Backend Health (just for UI indicator)
+        const isAlive = await apiService.checkHealth();
+        setIsBackendConnected(isAlive);
+
+        // 2. Try to load State (Remote -> Local Fallback)
+        const savedState = await apiService.loadFullState();
+
+        if (savedState && (savedState.ctt || savedState.btsStations.length > 0)) {
+            console.log("Loaded saved state successfully.");
+            setActivities(savedState.activities || []);
+            setCtt(savedState.ctt || null);
+            setBtsStations(savedState.btsStations || []);
+            setLiaisons(savedState.liaisons || []);
+            setTickets(savedState.tickets || []);
+        } else {
+            console.log("No saved state found (New Deployment). Seeding defaults...");
+            const defaultState = initializeDefaultState();
+            
+            // Persist defaults immediately to DB/Local
+            await apiService.initializeDefaults(defaultState);
+            
+            setActivities(defaultState.activities);
+            setCtt(defaultState.ctt);
+            setBtsStations(defaultState.btsStations);
+            setLiaisons(defaultState.liaisons);
+            setTickets(defaultState.tickets);
+        }
+        setIsDatabaseLoading(false);
+    };
+
+    initApp();
   }, []);
-
-  // Handle File Upload (Simulation of ingestion)
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setIsProcessing(true);
-      // In a real app, we'd read the file content. 
-      // Here, we simulate reading a "Report" or "Log"
-      setTimeout(async () => {
-        const dummyText = "Rapport d'intervention: Le technicien Paul a réparé l'antenne au site Carrefour Mbalmayo. Statut: Terminé. Également, une alerte de voltage a été détectée à l'Hôpital de District.";
-        
-        // Process dummy text
-        const extracted = await extractActivityFromText(dummyText);
-        // We might get multiple, but let's handle one for simplicity in this demo or loop if we split text
-        // Let's manually mock two findings for the demo based on the dummy text
-        
-        const loc1 = await findLocationCoordinates("Carrefour Mbalmayo");
-        if (loc1) {
-            setActivities(prev => [...prev, {
-                id: Date.now().toString() + '1',
-                title: "Réparation Antenne",
-                description: "Intervention technique sur antenne principale.",
-                status: ActivityStatus.COMPLETED,
-                locationName: "Carrefour Mbalmayo",
-                coordinates: loc1,
-                timestamp: new Date().toISOString(),
-                source: 'UPLOAD',
-                technician: "Paul"
-            }]);
-        }
-
-        const loc2 = await findLocationCoordinates("Hôpital de District Mbalmayo");
-        if (loc2) {
-             setActivities(prev => [...prev, {
-                id: Date.now().toString() + '2',
-                title: "Alerte Voltage",
-                description: "Fluctuation de tension critique détectée.",
-                status: ActivityStatus.ALERT,
-                locationName: "Hôpital de District",
-                coordinates: loc2,
-                timestamp: new Date().toISOString(),
-                source: 'UPLOAD'
-            }]);
-        }
-        
-        setIsProcessing(false);
-      }, 1500);
-    }
-  };
-
-  const handleGenerateReport = async () => {
-    setIsProcessing(true);
-    const html = await generateWeeklyReport(activities);
-    setReportHtml(html);
-    setIsProcessing(false);
-  };
 
   const handleChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,136 +93,332 @@ const Dashboard: React.FC = () => {
     setIsChatting(true);
 
     try {
-        const responseText = await chatWithAgent([...chatHistory, userMsg], chatInput);
+        // We pass the FULL live architecture to the AI
+        const contextData = { btsStations, liaisons, tickets: [], activities };
+        const responseText = await chatWithAgent([...chatHistory, userMsg], chatInput, contextData);
         setChatHistory(prev => [...prev, { role: "model", parts: [{ text: responseText }] }]);
     } catch (err) {
         console.error(err);
+        setChatHistory(prev => [...prev, { role: "model", parts: [{ text: "Erreur de connexion à l'IA." }] }]);
     } finally {
         setIsChatting(false);
     }
   };
 
+  // --- PERSISTENCE HANDLERS (SAVE TO DB) ---
+
+  const triggerAiSync = () => {
+      setAiSyncStatus('SYNCING');
+      setTimeout(() => setAiSyncStatus('SYNCED'), 1500); // Fake delay to show feedback
+  };
+
+  const handleSaveLiaison = async (updatedLiaison: Liaison) => {
+    setIsSaving(true);
+    try {
+        // 1. Update UI immediately
+        setLiaisons(prev => prev.map(l => l.id === updatedLiaison.id ? updatedLiaison : l));
+        setEditingLiaison(null);
+        
+        // 2. Persist to SQLite / LocalStorage
+        await apiService.saveLiaison(updatedLiaison);
+
+        const notif: AppNotification = {
+            id: Date.now().toString(),
+            title: 'Données Sauvegardées',
+            message: `La liaison "${updatedLiaison.name}" et ses torons ont été enregistrés avec succès.`,
+            type: 'SUCCESS',
+            date: new Date().toISOString(),
+            isRead: false
+        };
+        setNotifications(prev => [notif, ...prev]);
+        triggerAiSync();
+    } catch (error) {
+        console.error("Save Error", error);
+        alert("Erreur lors de la sauvegarde.");
+    } finally {
+        setIsSaving(false);
+    }
+  };
+
+  const handleSaveNode = async (updatedNode: Bts | Ctt) => {
+      setIsSaving(true);
+      try {
+        // 1. Update UI immediately
+        if (editingNode?.type === 'CTT') {
+            setCtt(updatedNode as Ctt);
+        } else {
+            setBtsStations(prev => prev.map(b => b.id === updatedNode.id ? (updatedNode as Bts) : b));
+        }
+        setEditingNode(null);
+
+        // 2. Persist to SQLite / LocalStorage
+        await apiService.saveSite(updatedNode);
+
+        const notif: AppNotification = {
+            id: Date.now().toString(),
+            title: 'Données Sauvegardées',
+            message: `Le site "${updatedNode.name}" et ses équipements ont été enregistrés.`,
+            type: 'SUCCESS',
+            date: new Date().toISOString(),
+            isRead: false
+        };
+        setNotifications(prev => [notif, ...prev]);
+        triggerAiSync();
+      } catch (error) {
+          console.error("Save Error", error);
+          alert("Erreur lors de la sauvegarde du nœud.");
+      } finally {
+          setIsSaving(false);
+      }
+  };
+
+  const handleNodeClick = (node: Bts | Ctt, type: 'BTS' | 'CTT') => {
+      setEditingNode({ node, type });
+  };
+
+  const handleImportMediaClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
+
+    try {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = async () => {
+            const base64String = reader.result as string;
+            const base64Data = base64String.split(',')[1];
+            const analysis = await analyzeImageContext(base64Data, file.type);
+            
+            if (analysis) {
+                const newNotif: AppNotification = {
+                    id: Date.now().toString(),
+                    title: `Média Analysé: ${analysis.title}`,
+                    message: analysis.description,
+                    type: 'INFO',
+                    date: new Date().toISOString(),
+                    isRead: false
+                };
+                setNotifications(prev => [newNotif, ...prev]);
+
+                if (analysis.detectedCoordinates || analysis.detectedInfrastructure) {
+                   const coords = analysis.detectedCoordinates || { lat: 3.5170, lng: 11.5012 };
+                   
+                   const newActivity: Activity = {
+                       id: `act-import-${Date.now()}`,
+                       title: analysis.title,
+                       description: analysis.description,
+                       locationName: 'Localisation Image',
+                       coordinates: coords,
+                       status: ActivityStatus.PENDING,
+                       context: analysis.suggestedContext,
+                       timestamp: new Date().toISOString(),
+                       source: 'MEDIA'
+                   };
+                   
+                   setActivities(prev => [...prev, newActivity]);
+                   // Persist
+                   await apiService.saveActivity(newActivity);
+                   triggerAiSync();
+                }
+            } else {
+                alert("Impossible d'analyser l'image.");
+            }
+            setIsProcessing(false);
+        };
+    } catch (error) {
+        console.error("File processing error", error);
+        setIsProcessing(false);
+    }
+  };
+
+  if (isDatabaseLoading) {
+      return (
+          <div className="h-screen flex items-center justify-center bg-slate-950 text-slate-200">
+              <div className="flex flex-col items-center gap-4">
+                  <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <div className="text-lg font-bold">Chargement de l'Architecture...</div>
+              </div>
+          </div>
+      );
+  }
+
   return (
-    <div className="h-screen flex flex-col overflow-hidden font-sans">
+    <div className="h-screen flex flex-col overflow-hidden font-sans bg-slate-950 text-slate-200">
       {/* Header */}
-      <header className="h-16 bg-slate-900 border-b border-slate-700 flex items-center justify-between px-6 shrink-0">
+      <header className="h-14 bg-slate-900 border-b border-slate-700 flex items-center justify-between px-4 shrink-0 shadow-lg z-10">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">T</div>
-          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-teal-300 bg-clip-text text-transparent">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-lg shadow-blue-900/50 shadow-lg">T</div>
+          <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-teal-300 bg-clip-text text-transparent">
             Centre de Transmission AI
           </h1>
-          <span className="text-xs text-slate-500 border border-slate-700 px-2 py-0.5 rounded">Mbalmayo Node</span>
+          
+          {isBackendConnected ? (
+              <span className="flex items-center gap-1 text-[10px] text-green-400 bg-green-900/20 px-2 py-0.5 rounded border border-green-500/30">
+                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                  DB: NODE.JS
+              </span>
+          ) : (
+             <span className="flex items-center gap-1 text-[10px] text-orange-400 bg-orange-900/20 px-2 py-0.5 rounded border border-orange-500/30">
+                  <span className="w-1.5 h-1.5 bg-orange-500 rounded-full"></span>
+                  DB: LOCAL
+              </span>
+          )}
+          {isSaving && <span className="text-xs text-blue-400 animate-pulse ml-2">Sauvegarde en cours...</span>}
         </div>
-        <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 cursor-pointer bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition-colors text-sm border border-slate-600">
-                <svg className="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-                <span>Ingérer Données</span>
-                <input type="file" className="hidden" onChange={handleFileUpload} />
-            </label>
+        <div className="flex items-center gap-3">
+            <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept="image/*,application/pdf"
+                onChange={handleFileChange}
+            />
             <button 
-                onClick={handleGenerateReport}
-                className="bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 rounded text-sm transition-colors flex items-center gap-2 font-medium shadow-lg shadow-teal-900/20">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
-                Générer Rapport Hebdo
+                onClick={handleImportMediaClick}
+                disabled={isProcessing}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded text-xs transition-colors flex items-center gap-2 font-bold shadow-lg shadow-indigo-900/20 disabled:opacity-50">
+                {isProcessing ? 'Analyse...' : 'Importer Plan/Image'}
             </button>
         </div>
       </header>
 
       {/* Main Content Grid */}
-      <main className="flex-1 overflow-hidden p-4 grid grid-cols-12 gap-4">
+      <main className="flex-1 overflow-hidden p-3 grid grid-cols-12 gap-3 relative">
         
-        {/* Left Column: Map (7 cols) */}
-        <div className="col-span-12 lg:col-span-7 flex flex-col gap-4 relative">
-            {/* Map Container */}
-            <div className="flex-1 relative min-h-[400px]">
-                <MapVisualizer activities={activities} />
-                {isProcessing && (
-                    <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm z-[500] flex items-center justify-center">
-                        <div className="bg-slate-800 p-4 rounded-lg shadow-xl flex items-center gap-3 border border-slate-600">
-                            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                            <span className="text-slate-200 font-medium">Analyse IA en cours...</span>
+        {/* Left Column: Map & Topology (8 cols - wider for map) */}
+        <div className="col-span-12 lg:col-span-8 flex flex-col gap-3 relative">
+            <div className="flex-1 relative min-h-[400px] border border-slate-700 rounded-xl overflow-hidden shadow-2xl">
+                <MapVisualizer 
+                    activities={activities} 
+                    ctt={ctt} 
+                    btsStations={btsStations} 
+                    liaisons={liaisons} 
+                    onLiaisonClick={setEditingLiaison}
+                    onNodeClick={handleNodeClick}
+                />
+                
+                {/* Map Overlay Stats */}
+                <div className="absolute bottom-4 left-4 flex gap-2 pointer-events-none">
+                     <div className="bg-slate-900/80 backdrop-blur border border-slate-600 rounded px-3 py-1 text-xs">
+                        <span className="text-slate-400">Sites:</span> <span className="text-white font-bold">{btsStations.length + (ctt ? 1 : 0)}</span>
+                     </div>
+                     <div className="bg-slate-900/80 backdrop-blur border border-slate-600 rounded px-3 py-1 text-xs">
+                        <span className="text-slate-400">Liaisons:</span> <span className="text-white font-bold">{liaisons.length}</span>
+                     </div>
+                </div>
+            </div>
+            
+            <div className="h-32 bg-slate-900 border border-slate-700 rounded-xl p-3 flex flex-col">
+                 <h3 className="text-xs font-bold text-slate-400 uppercase mb-2">Notifications Système</h3>
+                 <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                     <NotificationCenter notifications={notifications} />
+                 </div>
+            </div>
+        </div>
+
+        {/* Right Column: AI Assistant (4 cols) */}
+        <div className="col-span-12 lg:col-span-4 flex flex-col h-full overflow-hidden bg-slate-900 border border-slate-700 rounded-xl shadow-xl">
+            {/* Assistant Header */}
+            <div className="p-3 bg-slate-800 border-b border-slate-700 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
+                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-slate-100 text-sm">Assistant Architecture</h3>
+                        <p className="text-[10px] text-slate-400">Expertise Technique & Infrastructure</p>
+                    </div>
+                </div>
+                {/* Sync Indicator */}
+                <div className={`text-[10px] font-bold px-2 py-0.5 rounded border transition-colors ${aiSyncStatus === 'SYNCED' ? 'text-green-400 border-green-500/30 bg-green-900/20' : 'text-blue-400 border-blue-500/30 bg-blue-900/20 animate-pulse'}`}>
+                    {aiSyncStatus === 'SYNCED' ? '● BASE À JOUR' : '↻ ACTUALISATION...'}
+                </div>
+            </div>
+
+            {/* Chat Area */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-4 bg-slate-950/50" ref={chatScrollRef}>
+                 {chatHistory.length === 0 && (
+                     <div className="text-center mt-10 opacity-50 px-6">
+                         <p className="text-sm text-slate-400 mb-2">Bonjour. Je suis connecté à votre base de données.</p>
+                         <p className="text-xs text-slate-500">Posez-moi des questions sur les câbles, les équipements, les distances ou la topologie.</p>
+                         <div className="mt-4 grid grid-cols-1 gap-2 text-xs">
+                             <div className="bg-slate-800 p-2 rounded cursor-pointer hover:bg-slate-700">"Liste les équipements du CTT Mbalmayo"</div>
+                             <div className="bg-slate-800 p-2 rounded cursor-pointer hover:bg-slate-700">"Quelle est la distance Mbalmayo-Sangmelima ?"</div>
+                             <div className="bg-slate-800 p-2 rounded cursor-pointer hover:bg-slate-700">"Détaille les brins du câble Mengbwa"</div>
+                         </div>
+                     </div>
+                 )}
+                 {chatHistory.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[90%] p-3 rounded-xl text-sm shadow-md ${
+                            msg.role === 'user' 
+                            ? 'bg-blue-600 text-white rounded-tr-none' 
+                            : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-tl-none'
+                        }`}>
+                            {/* Render Markdown-like content simply */}
+                            <div className="whitespace-pre-wrap leading-relaxed">{msg.parts[0].text}</div>
+                        </div>
+                    </div>
+                ))}
+                {isChatting && (
+                    <div className="flex justify-start">
+                        <div className="bg-slate-800 p-3 rounded-xl rounded-tl-none border border-slate-700 flex gap-1 items-center">
+                            <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span>
+                            <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-100"></span>
+                            <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce delay-200"></span>
                         </div>
                     </div>
                 )}
             </div>
-            
-            {/* Quick Stats Row */}
-            <div className="h-24 grid grid-cols-4 gap-4">
-                <StatCard title="Total Activités" value={activities.length} color="bg-slate-800" />
-                <StatCard title="En Cours" value={activities.filter(a => a.status === ActivityStatus.IN_PROGRESS).length} color="bg-blue-900/30" textColor="text-blue-400" />
-                <StatCard title="Alertes" value={activities.filter(a => a.status === ActivityStatus.ALERT).length} color="bg-red-900/30" textColor="text-red-400" />
-                <StatCard title="Terminés" value={activities.filter(a => a.status === ActivityStatus.COMPLETED).length} color="bg-green-900/30" textColor="text-green-400" />
-            </div>
-        </div>
 
-        {/* Right Column: Feeds & Tools (5 cols) */}
-        <div className="col-span-12 lg:col-span-5 flex flex-col gap-4 h-full overflow-hidden">
-            
-            {/* Tab/View Switcher Logic could go here, for now split vertically */}
-            
-            {/* Top Right: WhatsApp Feed */}
-            <div className="flex-1 min-h-0">
-                <RealTimeFeed onMessageReceived={handleNewMessage} messages={messages} />
-            </div>
-
-            {/* Bottom Right: AI Chat / Agent */}
-            <div className="h-1/3 bg-slate-900 border border-slate-700 rounded-xl flex flex-col overflow-hidden">
-                <div className="p-2 border-b border-slate-700 bg-slate-800 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                    Assistant IA - Centre Ops
-                </div>
-                <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-slate-900">
-                    {chatHistory.length === 0 && <p className="text-slate-600 text-xs italic">Posez des questions sur les procédures ou les données...</p>}
-                    {chatHistory.map((msg, i) => (
-                        <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-[85%] p-2 rounded-lg text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-200'}`}>
-                                {msg.parts[0].text}
-                            </div>
-                        </div>
-                    ))}
-                    {isChatting && <div className="text-slate-500 text-xs animate-pulse">L'IA réfléchit...</div>}
-                </div>
-                <form onSubmit={handleChatSubmit} className="p-2 border-t border-slate-700 flex gap-2">
+            {/* Input Area */}
+            <form onSubmit={handleChatSubmit} className="p-3 bg-slate-800 border-t border-slate-700">
+                <div className="relative">
                     <input 
-                        className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm focus:border-blue-500 outline-none text-slate-200"
-                        placeholder="Demander une procédure..."
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-3 pr-10 py-3 text-sm text-slate-200 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all" 
+                        value={chatInput} 
+                        onChange={(e) => setChatInput(e.target.value)} 
+                        placeholder="Interroger l'architecture..." 
+                        disabled={isChatting}
                     />
-                    <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-sm transition-colors">
-                        Envoyer
+                    <button 
+                        type="submit" 
+                        disabled={!chatInput.trim() || isChatting}
+                        className="absolute right-2 top-2 p-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-500 disabled:opacity-50 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
                     </button>
-                </form>
-            </div>
+                </div>
+            </form>
         </div>
-      </main>
 
-      {/* Report Modal Overlay */}
-      {reportHtml && (
-        <div className="fixed inset-0 z-[1000] bg-black/80 flex items-center justify-center p-8 backdrop-blur-sm">
-            <div className="bg-white text-slate-900 w-full max-w-4xl max-h-full overflow-y-auto rounded-xl shadow-2xl flex flex-col">
-                <div className="p-4 border-b flex justify-between items-center bg-slate-50 sticky top-0">
-                    <h2 className="text-xl font-bold text-slate-800">Rapport Hebdomadaire Généré</h2>
-                    <button onClick={() => setReportHtml(null)} className="text-slate-500 hover:text-red-500 p-2">
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                    </button>
-                </div>
-                <div className="p-8 prose prose-slate max-w-none" dangerouslySetInnerHTML={{ __html: reportHtml }} />
-                <div className="p-4 border-t bg-slate-50 flex justify-end gap-2">
-                    <button onClick={() => window.print()} className="bg-slate-800 text-white px-4 py-2 rounded hover:bg-slate-700">Imprimer / PDF</button>
-                    <button onClick={() => setReportHtml(null)} className="bg-slate-200 text-slate-800 px-4 py-2 rounded hover:bg-slate-300">Fermer</button>
-                </div>
-            </div>
-        </div>
-      )}
+        {/* Modal: Fiber Editor */}
+        {editingLiaison && (
+          <FiberEditor 
+            liaison={editingLiaison} 
+            onSave={handleSaveLiaison} 
+            onClose={() => setEditingLiaison(null)} 
+          />
+        )}
+
+        {/* Modal: Node Editor */}
+        {editingNode && (
+            <NodeEditor
+                node={editingNode.node}
+                nodeType={editingNode.type}
+                liaisons={liaisons}
+                onSave={handleSaveNode}
+                onClose={() => setEditingNode(null)}
+            />
+        )}
+
+      </main>
     </div>
   );
 };
-
-const StatCard = ({ title, value, color, textColor = "text-white" }: any) => (
-    <div className={`${color} rounded-lg p-3 flex flex-col justify-center border border-slate-700/50`}>
-        <span className="text-slate-400 text-xs uppercase tracking-wide">{title}</span>
-        <span className={`text-2xl font-bold ${textColor}`}>{value}</span>
-    </div>
-);
 
 export default Dashboard;

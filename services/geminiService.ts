@@ -1,145 +1,174 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
-import { Activity, ActivityStatus } from "../types";
+import { Activity, ActivityStatus, Bts, Liaison, LiaisonStatus, Ticket, TicketPriority, TicketStatus, TicketType, Operator, ActivityContext, InfrastructureType, ChatMessage } from "../types";
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
- * Analyzes unstructured text (chats, docs) to extract structured activity data.
- * Uses 'gemini-2.5-flash' for speed.
+ * Parses a raw WhatsApp export text file into structured ChatMessage objects.
+ * (Fonction conservée pour compatibilité éventuelle avec imports futurs)
  */
+export const parseWhatsAppExport = (text: string): ChatMessage[] => {
+    const lines = text.split('\n');
+    const messages: ChatMessage[] = [];
+    const regex = /^\[?(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4},?\s\d{1,2}:\d{2}(?::\d{2})?)\]?(?:\s-\s)?\s([^:]+):\s(.+)$/;
+
+    lines.forEach((line, index) => {
+        const match = line.match(regex);
+        if (match) {
+            messages.push({
+                id: `wa-import-${Date.now()}-${index}`,
+                sender: match[2].trim(),
+                content: match[3].trim(),
+                timestamp: match[1],
+                processed: false
+            });
+        }
+    });
+    return messages;
+};
+
+// ... (Other extract functions kept as is) ...
 export const extractActivityFromText = async (text: string): Promise<Partial<Activity> | null> => {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
-      contents: `Extract operational activity details from this text: "${text}". 
-      Return JSON with fields: title, description, locationName, status (PENDING, IN_PROGRESS, COMPLETED, ALERT), technician. 
-      If no location is specified, leave locationName empty.`,
+      contents: `Extract activity: "${text}". Return JSON: title, description, locationName, status (PENDING, IN_PROGRESS, COMPLETED), technician.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            description: { type: Type.STRING },
-            locationName: { type: Type.STRING },
-            status: { type: Type.STRING, enum: ["PENDING", "IN_PROGRESS", "COMPLETED", "ALERT"] },
-            technician: { type: Type.STRING },
-          }
+            type: Type.OBJECT,
+            properties: {
+                title: { type: Type.STRING },
+                description: { type: Type.STRING },
+                locationName: { type: Type.STRING },
+                status: { type: Type.STRING },
+                technician: { type: Type.STRING },
+            }
         }
       }
     });
-
-    if (response.text) {
-      return JSON.parse(response.text) as Partial<Activity>;
-    }
-    return null;
-  } catch (error) {
-    console.error("Gemini Extraction Error:", error);
-    return null;
-  }
+    return response.text ? JSON.parse(response.text) : null;
+  } catch (error) { return null; }
 };
 
-/**
- * Uses Google Maps Grounding to find coordinates for a location name.
- * Uses 'gemini-2.5-flash' with googleMaps tool.
- */
-export const findLocationCoordinates = async (locationName: string): Promise<{ lat: number, lng: number } | null> => {
-  if (!locationName) return null;
-
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Find the coordinates for: ${locationName} in or near Mbalmayo, Cameroon.`,
-      config: {
-        tools: [{ googleMaps: {} }],
-      },
-    });
-
-    // Extract coordinates from grounding metadata
-    const candidates = response.candidates;
-    if (candidates && candidates.length > 0) {
-      const chunks = candidates[0].groundingMetadata?.groundingChunks;
-      if (chunks) {
-        // Iterate through chunks to find map data
-        for (const chunk of chunks) {
-          if (chunk.web?.uri) {
-             // Sometimes it returns a search query, we want precise location if possible
-             // For this demo, since we can't parse HTML from a URI easily without a backend, 
-             // We will try to rely on the model describing the location or using the map tool's strict output if available.
-             // However, the best way with the current SDK tool output is if it provides specific lat/long in the text or metadata.
-             // Let's ask the model to output JSON with the found location data in the text part as a fallback/confirmation.
-          }
-        }
-      }
-    }
-    
-    // Fallback: Ask Gemini to give us the likely coordinates based on its knowledge if the tool interaction is purely visual or link-based in this context.
-    // In a real production app with the full Maps API, we would use the Place ID. 
-    // Here we double-check with a direct query.
-    const coordResponse = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `What are the latitude and longitude coordinates for "${locationName}" in Mbalmayo, Cameroon? Return ONLY a JSON object: {"lat": number, "lng": number}.`,
-      config: {
-        responseMimeType: "application/json",
-         responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            lat: { type: Type.NUMBER },
-            lng: { type: Type.NUMBER }
-          }
-        }
-      }
-    });
-
-    if (coordResponse.text) {
-        return JSON.parse(coordResponse.text);
-    }
-
-    return null;
-  } catch (error) {
-    console.error("Location Search Error:", error);
-    return null;
-  }
+export const analyzeImageContext = async (base64Image: string, mimeType: string): Promise<any> => {
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: mimeType, data: base64Image } },
+                    { text: `Analyze this technical image. Provide title, technical description, context (MAINTENANCE, INCIDENT), coordinates if visible.` }
+                ]
+            },
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        title: { type: Type.STRING },
+                        description: { type: Type.STRING },
+                        suggestedContext: { type: Type.STRING },
+                        detectedCoordinates: {
+                             type: Type.OBJECT, properties: { lat: { type: Type.NUMBER }, lng: { type: Type.NUMBER } }, nullable: true
+                        },
+                        detectedInfrastructure: {
+                             type: Type.OBJECT, properties: { type: { type: Type.STRING }, name: { type: Type.STRING } }, nullable: true
+                        }
+                    }
+                }
+            }
+        });
+        return response.text ? JSON.parse(response.text) : null;
+    } catch (error) { return null; }
 };
 
+interface ChatContextData {
+  btsStations: Bts[];
+  liaisons: Liaison[];
+  tickets: Ticket[];
+  activities: Activity[];
+}
+
 /**
- * Generates a weekly report comparing planned vs actual work.
- * Uses 'gemini-3-pro-preview' for advanced reasoning.
+ * GÉNÉRATION DU CONTEXTE ARCHITECTURE POUR L'IA
+ * Cette fonction transforme la base de données brute en un manuel technique lisible par l'IA.
  */
-export const generateWeeklyReport = async (activities: Activity[]): Promise<string> => {
-  try {
-    const dataStr = JSON.stringify(activities);
-    const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
-      contents: `Analyze these operational activities for the Mbalmayo Transmission Center: ${dataStr}.
-      Generate a professional HTML report (divs, h2, p, ul, table classes using Tailwind CSS).
-      The report should include:
-      1. Executive Summary.
-      2. Table of Interventions (Status, Technician, Location).
-      3. Map Coverage Analysis (Are interventions clustered? Areas neglected?).
-      4. Recommendations for next week.
+const generateSystemInstruction = (data: ChatContextData): string => {
+  // 1. Liste des Sites avec Équipements
+  const sitesInfo = data.btsStations.map(s => {
+      const equipementsList = s.equipments?.map(e => `${e.name} (${e.type}) [${e.status}]`).join(', ') || 'Aucun équipement déclaré';
+      return `- SITE: ${s.name} (${s.type}). Coords: [${s.coordinates.lat}, ${s.coordinates.lng}]. Équipements: ${equipementsList}.`;
+  }).join('\n');
+
+  // 2. Liste des Liaisons Détaillées (Tronçons, Fibres, Infra)
+  const liaisonsInfo = data.liaisons.map(l => {
+      // Détail des tronçons
+      const sectionsInfo = l.sections?.map((sec, idx) => 
+          `   * Tronçon #${idx+1} "${sec.name}": ${sec.fiberCount}FO (${sec.cableType}), ${sec.lengthKm}km.`
+      ).join('\n') || '   * Pas de tronçons définis.';
       
-      Do not include <html> or <body> tags, just the content container.`,
-    });
+      // Détail des infrastructures (Manchons/Chambres)
+      const infraInfo = l.infrastructurePoints?.map(inf => 
+          `   * Infra: ${inf.name} (${inf.type}) à [${inf.coordinates.lat}, ${inf.coordinates.lng}].`
+      ).join('\n') || '';
 
-    return response.text || "<p>Could not generate report.</p>";
-  } catch (error) {
-    console.error("Report Generation Error:", error);
-    return "<p>Error generating report.</p>";
-  }
+      // Détail sommaire des brins actifs
+      const usedStrands = l.fiberStrands?.filter(f => f.status === 'USE').length || 0;
+      const totalStrands = l.fiberCount || 0;
+
+      return `
+- LIAISON: ${l.name} (Type: ${l.type}, Status: ${l.status})
+  Distance Totale: ${l.distanceKm} km.
+  Capacité: ${usedStrands}/${totalStrands} brins utilisés.
+  Connecte: [${l.startCoordinates.lat},${l.startCoordinates.lng}] -> [${l.endCoordinates.lat},${l.endCoordinates.lng}]
+  Détails Structurels:
+${sectionsInfo}
+  Infrastructures Intermédiaires:
+${infraInfo}
+`;
+  }).join('\n');
+
+  return `Tu es l'Assistant Architecture du Centre de Transmission. 
+  Ton rôle est de répondre EXCLUSIVEMENT aux questions techniques sur la topologie du réseau, les équipements et les câbles.
+  
+  Tu as accès à la base de données complète en temps réel ci-dessous.
+
+  === BASE DE DONNÉES ARCHITECTURE ===
+  
+  [SITES & NOEUDS]
+  ${sitesInfo}
+
+  [LIAISONS FIBRE OPTIQUE & RADIO]
+  ${liaisonsInfo}
+  
+  === FIN BASE DE DONNÉES ===
+
+  DIRECTIVES:
+  1. Si on te demande "Quelle est la distance entre X et Y", cherche la liaison correspondante et donne la distance exacte.
+  2. Si on te demande "Quels sont les équipements à X", liste-les avec leur statut.
+  3. Si on te demande "Détaille le câble X", donne les tronçons, le type de câble et le nombre de brins.
+  4. Sois précis, technique et concis. Utilise le format Markdown pour la lisibilité.
+  5. Si une information n'est pas dans la base (ex: liste vide), dis-le clairement.
+  `;
 };
 
-/**
- * Chat Assistant for the Transmission Center.
- */
-export const chatWithAgent = async (history: {role: string, parts: {text: string}[]}[], message: string) => {
+export const chatWithAgent = async (
+  history: {role: string, parts: {text: string}[]}[], 
+  message: string,
+  contextData: ChatContextData
+) => {
   try {
+    const systemInstruction = generateSystemInstruction(contextData);
+
     const chat = ai.chats.create({
       model: "gemini-3-pro-preview",
       history: history,
       config: {
-        systemInstruction: "You are the AI Chief of Operations for the Mbalmayo Transmission Center. You help manage field teams, analyze technical data, and draft procedures. Be concise and professional."
+        systemInstruction: systemInstruction,
+        temperature: 0.2 // Low temperature for factual architectural answers
       }
     });
     
@@ -147,6 +176,6 @@ export const chatWithAgent = async (history: {role: string, parts: {text: string
     return result.text;
   } catch (error) {
     console.error("Chat Error", error);
-    throw error;
+    return "Désolé, je ne peux pas accéder aux données d'architecture pour le moment.";
   }
 }
