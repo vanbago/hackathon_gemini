@@ -1,16 +1,19 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { InfrastructurePoint, InfrastructureType, InfrastructureCategory, Liaison, CableSection, FiberStrand, SplicingConnection } from '../types';
+import { InfrastructurePoint, InfrastructureType, InfrastructureCategory, Liaison, CableSection, FiberStrand, SplicingConnection, Bts, Ctt } from '../types';
 
 interface ManchonEditorProps {
   infra: InfrastructurePoint;
   liaisonContext: Liaison; 
+  availableNodes?: (Bts | Ctt)[]; 
+  externalLiaisons?: Liaison[]; // NEW: All other liaisons
   onSave: (updatedInfra: InfrastructurePoint) => void;
-  onAddSection: (startNodeId: string) => void; // Callback to create a cable starting here
+  onDelete?: () => void;
+  onAddSection: (startNodeId: string) => void; 
   onClose: () => void;
 }
 
-const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, onSave, onAddSection, onClose }) => {
+const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, availableNodes = [], externalLiaisons, onSave, onDelete, onAddSection, onClose }) => {
   const [name, setName] = useState(infra.name);
   const [activeTab, setActiveTab] = useState<'INFO' | 'SPLICING'>('SPLICING');
   
@@ -29,22 +32,74 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
   
   // 1. Find ALL sections connected to this infrastructure point (Start or End)
   const connectedSections = useMemo(() => {
-      if (!liaisonContext || !liaisonContext.sections) return [];
-      return liaisonContext.sections.filter(s => s.startPointId === infra.id || s.endPointId === infra.id);
-  }, [liaisonContext.sections, infra.id]);
+      // 1. Current Liaison Sections (Local State)
+      const localSections = liaisonContext?.sections?.filter(s => s.startPointId === infra.id || s.endPointId === infra.id) || [];
+
+      // 2. External Liaison Sections (Global State)
+      const remoteSections: CableSection[] = [];
+      if (externalLiaisons) {
+          externalLiaisons.forEach(l => {
+              if (l.id === liaisonContext.id) return; // Skip self
+              l.sections?.forEach(s => {
+                  if (s.startPointId === infra.id || s.endPointId === infra.id) {
+                      // Clone and tag name for clarity
+                      remoteSections.push({
+                          ...s,
+                          name: `${s.name} [${l.name}]` // Visual Hint
+                      });
+                  }
+              });
+          });
+      }
+
+      // Combine and filter duplicates if any (though ID check prevents self)
+      return [...localSections, ...remoteSections];
+  }, [liaisonContext, infra.id, externalLiaisons]);
 
   // 2. State to manually select which section is "Incoming" (Source)
   const [incomingSectionId, setIncomingSectionId] = useState<string>('');
 
-  // 3. Auto-detect default incoming on load (Logic: Section ending here is usually incoming)
+  // 3. IMPROVED Auto-detect default incoming on load using SCORING based on SERVICES
   useEffect(() => {
-      if (connectedSections.length > 0 && !incomingSectionId) {
-          // Priority 1: A section that explicitly ENDS at this node
-          const defaultIncoming = connectedSections.find(s => s.endPointId === infra.id);
-          // Priority 2: Just take the first one found
-          setIncomingSectionId(defaultIncoming ? defaultIncoming.id : connectedSections[0].id);
+      // Only run auto-detect if we haven't selected one yet, or if the current selection is invalid
+      const currentExists = connectedSections.find(s => s.id === incomingSectionId);
+      
+      if (connectedSections.length > 0 && (!incomingSectionId || !currentExists)) {
+          
+          // SCORING LOGIC to find the best candidate for "Source"
+          const scoredSections = connectedSections.map(sec => {
+              let score = 0;
+              
+              // Identify the other endpoint of the cable
+              const otherNodeId = sec.startPointId === infra.id ? sec.endPointId : sec.startPointId;
+              const otherNode = availableNodes.find(n => n.id === otherNodeId);
+
+              // 1. SERVICE CONTENT (Critère Principal demandé)
+              // Compter le nombre de brins qui portent un service (Nom ou Client défini)
+              const activeServicesCount = sec.fiberStrands?.filter(f => f.serviceName && f.serviceName.length > 0).length || 0;
+              score += (activeServicesCount * 5); // +5 points par service actif transporté
+
+              // 2. Network Hierarchy (From CTT)
+              if (otherNode?.id.includes('ctt')) score += 50; // Huge weight for CTT source
+
+              // 3. Topology Direction: Does this section physically END at this infra? (Convention: Start -> End)
+              if (sec.endPointId === infra.id) score += 10;
+
+              // 4. Fiber Count: Higher count usually implies upstream/backbone
+              score += (sec.fiberCount / 10); 
+
+              return { id: sec.id, score, services: activeServicesCount };
+          });
+
+          // Sort by score descending
+          scoredSections.sort((a, b) => b.score - a.score);
+          
+          // Select winner automatically
+          if(scoredSections.length > 0) {
+              setIncomingSectionId(scoredSections[0].id);
+          }
       }
-  }, [connectedSections, infra.id]);
+  }, [connectedSections, infra.id, availableNodes]); 
 
   // 4. Derived Lists based on selection
   const incomingSection = connectedSections.find(s => s.id === incomingSectionId) || null;
@@ -82,6 +137,20 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
     return map[colorName] || '#fff';
   };
 
+  // Helper to get friendly name of cable origin
+  const getCableOriginName = (sec: CableSection) => {
+      const originId = sec.startPointId === infra.id ? sec.endPointId : sec.startPointId;
+      if (!originId) return 'Inconnu';
+      
+      const node = availableNodes.find(n => n.id === originId);
+      if (node) return node.name;
+      
+      const infraPoint = liaisonContext.infrastructurePoints?.find(p => p.id === originId);
+      if (infraPoint) return infraPoint.name;
+
+      return 'Point Distant';
+  };
+
   // --- SPLICING LOGIC ---
 
   const handleIncomingClick = (strandId: string) => {
@@ -90,7 +159,6 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
 
   const handleIncomingSectionChange = (val: string) => {
       if (val === '__NEW__') {
-          // Trigger add section logic, treating this node as start (simplified, user can edit endpoints in modal)
           onAddSection(infra.id); 
       } else {
           setIncomingSectionId(val);
@@ -100,16 +168,13 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
   const handleOutgoingClick = (outgoingStrandId: string) => {
       if (!selectedIncomingStrand) return;
 
-      // Existing connection check
       const existingIndex = connections.findIndex(c => c.incomingStrandId === selectedIncomingStrand);
       let newConnections = [...connections];
 
       if (existingIndex !== -1) {
           if (connections[existingIndex].outgoingStrandId === outgoingStrandId) {
-              // Toggle Off
               newConnections.splice(existingIndex, 1);
           } else {
-              // Replace destination
               newConnections[existingIndex] = {
                   incomingStrandId: selectedIncomingStrand,
                   outgoingStrandId: outgoingStrandId,
@@ -117,7 +182,6 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
               };
           }
       } else {
-          // Add new
           newConnections.push({
               incomingStrandId: selectedIncomingStrand,
               outgoingStrandId: outgoingStrandId,
@@ -143,12 +207,20 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
           const incId = incomingSection.fiberStrands[i].id;
           const outId = targetSection.fiberStrands[i].id;
           
-          // Avoid duplicates
           if (!newConns.find(c => c.incomingStrandId === incId)) {
                newConns.push({ incomingStrandId: incId, outgoingStrandId: outId, status: 'SPLICED' });
           }
       }
       setConnections(newConns);
+  };
+  
+  // NEW: Helper to find cable info from strand ID
+  const getStrandInfo = (strandId: string) => {
+      for(const sec of connectedSections) {
+          const found = sec.fiberStrands?.find(f => f.id === strandId);
+          if(found) return { section: sec, strand: found };
+      }
+      return null;
   };
 
   const isSemiArtereInvalid = category === InfrastructureCategory.SEMI_ARTERE && outgoingSections.length < 2;
@@ -158,7 +230,7 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
       <div className="bg-slate-900 border border-slate-600 w-full max-w-6xl h-[90vh] rounded-xl shadow-2xl flex flex-col">
         
         {/* HEADER */}
-        <div className="flex justify-between items-center p-4 border-b border-slate-700 bg-slate-800 rounded-t-xl">
+        <div className="flex justify-between items-center p-4 border-b border-slate-700 bg-slate-800 rounded-t-xl shrink-0">
              <div className="flex items-center gap-4">
                  <div className={`w-12 h-12 rounded-lg flex items-center justify-center border-2 shadow-lg ${
                      category === InfrastructureCategory.ARTERE ? 'bg-red-600 border-yellow-400' :
@@ -173,7 +245,14 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                          <span className="text-[10px] bg-slate-900 border border-slate-600 px-2 py-0.5 rounded text-slate-300 uppercase">{category.replace('_', ' ')}</span>
                      </h3>
                      <p className="text-xs text-slate-400">
-                         {incomingSection ? `Source: ${incomingSection.name}` : 'Non raccordé'} • {outgoingSections.length} Départ(s)
+                         {incomingSection ? (
+                             <span className="flex items-center gap-1 text-blue-300">
+                                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
+                                 Source: {incomingSection.name} (Depuis {getCableOriginName(incomingSection)})
+                             </span>
+                         ) : 'Non raccordé'} 
+                         <span className="mx-2">•</span> 
+                         {outgoingSections.length} Départ(s)
                      </p>
                  </div>
              </div>
@@ -184,11 +263,11 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
         </div>
 
         {/* BODY */}
-        <div className="flex-1 overflow-hidden p-0 bg-slate-950 flex flex-col">
+        <div className="flex-1 overflow-hidden p-0 bg-slate-950 flex flex-col min-h-0">
             
             {/* ALERT FOR SEMI-ARTERE */}
             {isSemiArtereInvalid && (
-                <div className="bg-orange-900/50 border-b border-orange-500/50 p-2 text-center text-xs text-orange-200 font-bold flex items-center justify-center gap-2 animate-pulse">
+                <div className="bg-orange-900/50 border-b border-orange-500/50 p-2 text-center text-xs text-orange-200 font-bold flex items-center justify-center gap-2 animate-pulse shrink-0">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
                     Configuration Semi-Artère Incomplète : Il faut au moins 1 Câble Arrivée + 2 Départs (1 Continuité Backbone + 1 Piquage).
                 </div>
@@ -196,7 +275,7 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
 
             {/* TAB: SPLICING */}
             {activeTab === 'SPLICING' && (
-                <div className="h-full flex flex-col">
+                <div className="flex-1 flex flex-col min-h-0">
                     <div className="bg-slate-800/50 p-2 border-b border-slate-700 flex justify-between items-center px-6 shrink-0">
                         <div className="text-xs text-slate-400 flex items-center gap-2">
                             <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
@@ -230,13 +309,23 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                                     className="w-full bg-slate-800 border border-slate-600 rounded p-1.5 text-xs text-white font-bold focus:border-blue-500 outline-none mb-1"
                                 >
                                     <option value="" disabled>-- Choisir Câble --</option>
-                                    {connectedSections.map(s => (
-                                        <option key={s.id} value={s.id}>{s.name} ({s.fiberCount} FO)</option>
-                                    ))}
+                                    {connectedSections.map(s => {
+                                        const serviceCount = s.fiberStrands?.filter(f => f.serviceName).length || 0;
+                                        return (
+                                            <option key={s.id} value={s.id}>
+                                                {s.name} ({s.fiberCount} FO {serviceCount > 0 ? `• ${serviceCount} Services` : ''})
+                                            </option>
+                                        );
+                                    })}
                                     <option value="__NEW__" className="text-green-400 font-bold bg-slate-700">++ Créer Nouveau Câble ++</option>
                                 </select>
                                 
-                                {incomingSection && <div className="text-[10px] text-slate-500">{incomingSection.cableType}</div>}
+                                {incomingSection && (
+                                    <div className="text-[10px] text-slate-400 bg-slate-800 p-1.5 rounded border border-slate-700 mt-1 flex justify-between">
+                                        <span>Type: {incomingSection.cableType}</span>
+                                        <span className="text-blue-300 font-bold">De: {getCableOriginName(incomingSection)}</span>
+                                    </div>
+                                )}
                             </div>
                             
                             <div className="p-2 space-y-1">
@@ -244,6 +333,7 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                                 {incomingSection?.fiberStrands?.map(strand => {
                                     const connected = isConnected(strand.id);
                                     const isSelected = selectedIncomingStrand === strand.id;
+                                    const hasService = strand.serviceName && strand.serviceName.length > 0;
                                     
                                     return (
                                         <div 
@@ -255,12 +345,17 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                                                 : connected ? 'bg-slate-800 border-slate-700 opacity-60' : 'bg-slate-800 border-slate-700 hover:border-slate-500'
                                             }`}
                                         >
-                                            <div className="flex items-center gap-2">
-                                                <div className="w-3 h-3 rounded-full border border-white/20 shadow-sm" style={{ backgroundColor: getFiberColorHex(strand.colorCode) }}></div>
-                                                <span className="text-xs font-mono opacity-70 w-6 text-center">{strand.number}</span>
-                                                <span className="text-xs truncate max-w-[150px] font-medium">{strand.serviceName || 'Brin Libre'}</span>
+                                            <div className="flex items-center gap-2 overflow-hidden">
+                                                <div className="w-3 h-3 rounded-full border border-white/20 shadow-sm shrink-0" style={{ backgroundColor: getFiberColorHex(strand.colorCode) }}></div>
+                                                <span className="text-xs font-mono opacity-70 w-6 text-center shrink-0">{strand.number}</span>
+                                                <div className="flex flex-col overflow-hidden">
+                                                    <span className={`text-xs truncate font-medium ${hasService ? 'text-white font-bold' : 'text-slate-500'}`}>
+                                                        {hasService ? strand.serviceName : 'Libre / Réserve'}
+                                                    </span>
+                                                    {strand.client && <span className="text-[9px] text-cyan-400 truncate">{strand.client}</span>}
+                                                </div>
                                             </div>
-                                            {connected && <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>}
+                                            {connected && <svg className="w-4 h-4 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>}
                                         </div>
                                     );
                                 })}
@@ -268,7 +363,7 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                         </div>
 
                         {/* CENTER: SPLICE TRAY */}
-                        <div className="w-20 bg-slate-950 flex flex-col items-center justify-center relative border-r border-slate-700 shadow-inner">
+                        <div className="w-20 bg-slate-950 flex flex-col items-center justify-center relative border-r border-slate-700 shadow-inner shrink-0">
                             <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundSize: '20px 20px', backgroundImage: 'radial-gradient(circle, #ffffff 1px, transparent 1px)' }}></div>
                             <div className="-rotate-90 text-[10px] font-bold text-slate-600 tracking-[0.2em] uppercase whitespace-nowrap mb-8">Cassette Soudure</div>
                             <div className="space-y-4">
@@ -285,7 +380,7 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                         {/* RIGHT: OUTGOING CABLES (TABS) */}
                         <div className="flex-1 flex flex-col bg-slate-900/30">
                             {/* TABS HEADER */}
-                            <div className="flex overflow-x-auto bg-slate-900 border-b border-slate-700 no-scrollbar">
+                            <div className="flex overflow-x-auto bg-slate-900 border-b border-slate-700 no-scrollbar shrink-0">
                                 {outgoingSections.map((sec) => (
                                     <button
                                         key={sec.id}
@@ -354,7 +449,45 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
                                 })}
                             </div>
                         </div>
+                    </div>
 
+                    {/* NEW: VISUAL SUMMARY (Plan de Boîte) */}
+                    <div className="h-40 bg-slate-900 border-t border-slate-700 shrink-0 flex flex-col">
+                        <div className="bg-slate-800 p-2 px-4 border-b border-slate-700 flex justify-between items-center">
+                             <div className="text-xs font-bold text-slate-300 uppercase flex items-center gap-2">
+                                <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                                Plan de Boîte / Continuités ({connections.length})
+                             </div>
+                             <div className="text-[10px] text-slate-500">Vue Globale (Split)</div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-2 custom-scrollbar">
+                            <div className="grid grid-cols-2 gap-2">
+                                {connections.length === 0 && <div className="col-span-2 text-center text-slate-500 text-xs italic py-4">Aucune épissure réalisée.</div>}
+                                {connections.map((conn, idx) => {
+                                    const source = getStrandInfo(conn.incomingStrandId);
+                                    const dest = getStrandInfo(conn.outgoingStrandId);
+                                    if(!source || !dest) return null;
+
+                                    return (
+                                        <div key={idx} className="bg-slate-800/50 p-2 rounded border border-slate-700 flex justify-between items-center text-[10px] hover:border-slate-500 transition-colors">
+                                            <div className="flex items-center gap-2 flex-1">
+                                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getFiberColorHex(source.strand.colorCode) }}></div>
+                                                <span className="font-bold text-slate-300 truncate w-16" title={source.section.name}>{source.section.name}</span>
+                                                <span className="text-slate-500">#{source.strand.number}</span>
+                                            </div>
+                                            
+                                            <div className="px-2 text-slate-600">⟷</div>
+                                            
+                                            <div className="flex items-center gap-2 flex-1 justify-end">
+                                                <span className="text-slate-500">#{dest.strand.number}</span>
+                                                <span className="font-bold text-slate-300 truncate w-16 text-right" title={dest.section.name}>{dest.section.name}</span>
+                                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: getFiberColorHex(dest.strand.colorCode) }}></div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}
@@ -416,11 +549,18 @@ const ManchonEditor: React.FC<ManchonEditorProps> = ({ infra, liaisonContext, on
         </div>
 
         {/* FOOTER */}
-        <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3 rounded-b-xl">
-             <button onClick={onClose} className="px-4 py-2 text-slate-400 hover:text-white text-sm font-medium">Fermer sans sauvegarder</button>
-             <button onClick={handleSave} className="px-6 py-2 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white rounded shadow-lg text-sm font-bold transition-transform active:scale-95">
-                 Enregistrer Configuration
-             </button>
+        <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-between gap-3 rounded-b-xl shrink-0">
+             {onDelete && (
+                <button onClick={onDelete} className="px-4 py-2 bg-red-900/40 text-red-500 hover:bg-red-600 hover:text-white border border-red-900/50 rounded shadow text-xs font-bold transition-colors">
+                    Supprimer l'Infrastructure
+                </button>
+             )}
+             <div className="flex gap-3 ml-auto">
+                 <button onClick={onClose} className="px-4 py-2 text-slate-400 hover:text-white text-sm font-medium">Fermer sans sauvegarder</button>
+                 <button onClick={handleSave} className="px-6 py-2 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 text-white rounded shadow-lg text-sm font-bold transition-transform active:scale-95">
+                     Enregistrer Configuration
+                 </button>
+             </div>
         </div>
 
       </div>

@@ -4,6 +4,7 @@ import MapVisualizer from './MapVisualizer';
 import NotificationCenter from './NotificationCenter';
 import FiberEditor from './FiberEditor';
 import NodeEditor from './NodeEditor'; 
+import StorageMonitor from './StorageMonitor'; // IMPORT NEW COMPONENT
 
 import { Activity, ActivityStatus, Ctt, Bts, Liaison, Ticket, AppNotification, DashboardTab } from '../types';
 import { chatWithAgent, analyzeImageContext } from '../services/geminiService';
@@ -273,6 +274,10 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden font-sans bg-slate-950 text-slate-200">
+      
+      {/* ADDED STORAGE MONITOR */}
+      <StorageMonitor />
+
       {/* Header */}
       <header className="h-14 bg-slate-900 border-b border-slate-700 flex items-center justify-between px-4 shrink-0 shadow-lg z-10">
         <div className="flex items-center gap-3">
@@ -284,7 +289,7 @@ const Dashboard: React.FC = () => {
           {isBackendConnected ? (
               <span className="flex items-center gap-1 text-[10px] text-green-400 bg-green-900/20 px-2 py-0.5 rounded border border-green-500/30">
                   <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-                  DB: NODE.JS
+                  DB: NODE.JS (LOGGED)
               </span>
           ) : (
              <span className="flex items-center gap-1 text-[10px] text-orange-400 bg-orange-900/20 px-2 py-0.5 rounded border border-orange-500/30">
@@ -430,6 +435,7 @@ const Dashboard: React.FC = () => {
           <FiberEditor 
             liaison={editingLiaison} // Pass null if creating
             availableNodes={availableNodes} // PASS AVAILABLE NODES FOR ROUTING
+            externalLiaisons={liaisons} // PASS ALL LIAISONS TO DETECT CROSS-CONNECTS
             onSave={handleSaveLiaison} 
             onClose={() => { setEditingLiaison(null); setIsCreatingLiaison(false); }} 
           />

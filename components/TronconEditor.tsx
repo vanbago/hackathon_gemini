@@ -7,15 +7,19 @@ interface TronconEditorProps {
   section: CableSection;
   availableNodes: (Bts | Ctt)[]; // List of available sites
   onSave: (updatedSection: CableSection) => void;
+  onDelete?: () => void;
   onClose: () => void;
 }
 
-const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, onSave, onClose }) => {
+const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, onSave, onDelete, onClose }) => {
   const [name, setName] = useState(section.name);
   const [cableType, setCableType] = useState(section.cableType);
   const [fiberCount, setFiberCount] = useState(section.fiberCount);
   const [lengthKm, setLengthKm] = useState(section.lengthKm || 0);
   const [isHosted, setIsHosted] = useState(section.isHosted || false);
+  
+  // NEW: Color Scheme State
+  const [colorScheme, setColorScheme] = useState<'STANDARD' | 'SPECIAL_MENGWA'>(section.colorScheme || 'STANDARD');
 
   // GPS Coordinates State
   const [startLat, setStartLat] = useState(section.startCoordinate?.lat || 0);
@@ -50,10 +54,17 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
     let type = 'Standard G.652D';
 
     if (fiberCount <= 6) { tubes = 1; fpt = 6; type = 'Drop Cable / Last Mile'; }
-    else if (fiberCount === 8) { tubes = 1; fpt = 8; type = 'Spécial (8 FO)'; } // Cas rare
+    else if (fiberCount === 8) { tubes = 1; fpt = 8; type = 'Spécial (8 FO)'; }
     else if (fiberCount <= 12) { tubes = 1; fpt = 12; type = 'Monotube Standard'; }
-    else if (fiberCount === 18) { tubes = 3; fpt = 6; type = 'Multitube (3x6)'; }
-    else if (fiberCount === 24) { tubes = 2; fpt = 12; type = 'Multitube (2x12) ou (4x6)'; } // Souvent 4x6 en distribution
+    // CUSTOM LOGIC FOR 18 and 24 FO
+    else if (fiberCount === 18) { 
+        if (colorScheme === 'SPECIAL_MENGWA') {
+             tubes = 3; fpt = 6; type = 'Multitube (3x6) - Code Spécial (B,R,V,J,Vi,Bl)';
+        } else {
+             tubes = 3; fpt = 6; type = 'Multitube (3x6) - Standard (B,O,V,M,G,Bl)';
+        }
+    }
+    else if (fiberCount === 24) { tubes = 4; fpt = 6; type = 'Multitube (4x6)'; }
     else if (fiberCount === 36) { tubes = 3; fpt = 12; type = 'Multitube (3x12)'; }
     else if (fiberCount === 48) { tubes = 4; fpt = 12; type = 'Multitube (4x12)'; }
     else if (fiberCount === 72) { tubes = 6; fpt = 12; type = 'Multitube (6x12)'; }
@@ -62,7 +73,7 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
     else { tubes = Math.ceil(fiberCount / 12); fpt = 12; type = 'Custom / Hébergé'; }
 
     setStructure({ tubes, fibersPerTube: fpt, type });
-  }, [fiberCount]);
+  }, [fiberCount, colorScheme]);
 
   // Handle Node Selection Logic
   useEffect(() => {
@@ -137,6 +148,7 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
         fiberCount,
         lengthKm,
         isHosted,
+        colorScheme, // SAVE THE SCHEME
         startCoordinate: (startLat && startLng) ? { lat: startLat, lng: startLng } : undefined,
         endCoordinate: (endLat && endLng) ? { lat: endLat, lng: endLng } : undefined,
         startPointId: selectedStartNode || section.startPointId,
@@ -145,6 +157,7 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
   };
 
   const getTubeColor = (idx: number) => {
+      // Standard 12 Colors (ITU-T)
       const colors = ["bg-blue-500", "bg-orange-500", "bg-green-500", "bg-amber-700", "bg-slate-400", "bg-white", "bg-red-500", "bg-black", "bg-yellow-400", "bg-purple-500", "bg-pink-500", "bg-cyan-400"];
       return colors[idx % 12];
   };
@@ -325,8 +338,8 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
                                 <option value={6}>6 FO</option>
                                 <option value={8}>8 FO</option>
                                 <option value={12}>12 FO</option>
-                                <option value={18}>18 FO</option>
-                                <option value={24}>24 FO</option>
+                                <option value={18}>18 FO (3x6)</option>
+                                <option value={24}>24 FO (4x6)</option>
                                 <option value={36}>36 FO</option>
                                 <option value={48}>48 FO</option>
                                 <option value={72}>72 FO</option>
@@ -338,10 +351,21 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
                             </div>
                         </div>
                     </div>
+                    
+                    {/* NEW: COLOR SCHEME SELECTOR */}
                     <div>
-                         <label className="block text-[10px] text-slate-400 mb-1">Structure Estimée</label>
-                         <div className="text-sm font-mono text-slate-300 bg-slate-900 p-2 rounded border border-slate-600">
-                             {structure.tubes} Tubes x {structure.fibersPerTube}
+                         <label className="block text-[10px] text-slate-400 mb-1">Schéma de Couleurs</label>
+                         <select 
+                            value={colorScheme}
+                            onChange={e => setColorScheme(e.target.value as 'STANDARD' | 'SPECIAL_MENGWA')}
+                            className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white font-bold"
+                            disabled={fiberCount !== 18 && fiberCount !== 24} // Only enable for relevant counts
+                         >
+                            <option value="STANDARD">Standard (Bleu, Orange...)</option>
+                            <option value="SPECIAL_MENGWA">Spécial (Bleu, Rouge, Vert...)</option>
+                         </select>
+                         <div className="text-[9px] text-slate-500 mt-1">
+                             {colorScheme === 'SPECIAL_MENGWA' ? 'Ordre: Bleu, Rouge, Vert, Jaune, Violet, Blanc' : 'Ordre: Bleu, Orange, Vert, Marron, Gris, Blanc'}
                          </div>
                     </div>
                 </div>
@@ -400,9 +424,16 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
         </div>
 
         {/* Footer */}
-        <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end gap-3">
-            <button onClick={onClose} className="px-4 py-2 text-slate-400 hover:text-white text-sm font-medium transition-colors">Annuler</button>
-            <button onClick={handleSave} className="px-6 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded shadow-lg text-sm font-bold transition-transform active:scale-95">Valider & Enregistrer</button>
+        <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-between gap-3">
+            {onDelete && (
+                <button onClick={onDelete} className="px-4 py-2 bg-red-900/40 text-red-500 hover:bg-red-600 hover:text-white border border-red-900/50 rounded shadow text-xs font-bold transition-colors">
+                    Supprimer ce Tronçon
+                </button>
+            )}
+            <div className="flex gap-3 ml-auto">
+                <button onClick={onClose} className="px-4 py-2 text-slate-400 hover:text-white text-sm font-medium transition-colors">Annuler</button>
+                <button onClick={handleSave} className="px-6 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded shadow-lg text-sm font-bold transition-transform active:scale-95">Valider & Enregistrer</button>
+            </div>
         </div>
       </div>
     </div>

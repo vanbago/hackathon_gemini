@@ -4,7 +4,65 @@ import { Activity, Bts, Ctt, Liaison, ChatMessage, Ticket } from "../types";
 const API_URL = "http://localhost:3001/api";
 const LOCAL_STORAGE_KEY = "transmission_db_v1";
 
-// --- LOCAL STORAGE HELPERS (FALLBACK DB) ---
+// --- EVENT SYSTEM FOR STORAGE MONITORING ---
+type TransactionStatus = 'PENDING' | 'SUCCESS' | 'ERROR' | 'OFFLINE_SYNC';
+
+export interface StorageTransaction {
+    id: string;
+    entity: string; // 'LIAISON', 'SITE', etc.
+    name: string;
+    action: 'SAVE' | 'LOAD';
+    status: TransactionStatus;
+    timestamp: number;
+    duration?: number;
+}
+
+type TransactionListener = (transaction: StorageTransaction) => void;
+const listeners: TransactionListener[] = [];
+
+export const subscribeToStorageEvents = (listener: TransactionListener) => {
+    listeners.push(listener);
+    return () => {
+        const idx = listeners.indexOf(listener);
+        if (idx > -1) listeners.splice(idx, 1);
+    };
+};
+
+const notifyTransaction = (t: StorageTransaction) => {
+    listeners.forEach(l => l(t));
+};
+
+// Helper to wrap API calls with monitoring
+const monitoredRequest = async (entity: string, name: string, requestFn: () => Promise<any>): Promise<any> => {
+    const txId = Math.random().toString(36).substr(2, 9);
+    const start = Date.now();
+    
+    // Notify Start
+    notifyTransaction({
+        id: txId, entity, name, action: 'SAVE', status: 'PENDING', timestamp: start
+    });
+
+    try {
+        const result = await requestFn();
+        const duration = Date.now() - start;
+        
+        // Notify Success
+        notifyTransaction({
+            id: txId, entity, name, action: 'SAVE', status: result.offline ? 'OFFLINE_SYNC' : 'SUCCESS', timestamp: Date.now(), duration
+        });
+        return result;
+    } catch (error) {
+        const duration = Date.now() - start;
+        // Notify Error
+        notifyTransaction({
+            id: txId, entity, name, action: 'SAVE', status: 'ERROR', timestamp: Date.now(), duration
+        });
+        throw error;
+    }
+};
+
+
+// --- LOCAL STORAGE HELPERS ---
 
 const getLocalDb = () => {
     try {
@@ -37,25 +95,26 @@ const updateLocalItem = (collection: string, item: any) => {
 // --- API SERVICE ---
 
 export const apiService = {
-    // Check if backend is alive
+    subscribeToStorageEvents,
+
     checkHealth: async (): Promise<boolean> => {
         try {
             const res = await fetch(`${API_URL}/state`, { method: 'HEAD' });
             return res.ok;
         } catch (e) {
-            // console.warn("Backend offline, using LocalStorage.");
             return false;
         }
     },
 
-    // Load full application state (Try Remote -> Fallback Local)
     loadFullState: async () => {
-        // 1. Try Remote
+        // Monitored Load
+        const txId = 'load-init';
+        notifyTransaction({ id: txId, entity: 'DATABASE', name: 'Initial Load', action: 'LOAD', status: 'PENDING', timestamp: Date.now() });
+        
         try {
             const response = await fetch(`${API_URL}/state`);
             if (response.ok) {
                 const data = await response.json();
-                // Sync Remote to Local for next offline usage
                 const localFormat = {
                     sites: [...(data.btsStations || []), ...(data.ctt ? [data.ctt] : [])],
                     liaisons: data.liaisons || [],
@@ -64,23 +123,21 @@ export const apiService = {
                     tickets: data.tickets || []
                 };
                 saveLocalDb(localFormat);
+                notifyTransaction({ id: txId, entity: 'DATABASE', name: 'Initial Load', action: 'LOAD', status: 'SUCCESS', timestamp: Date.now() });
                 return data;
             }
-        } catch (error) {
-            // Ignored, proceed to fallback
-        }
+        } catch (error) {}
 
-        // 2. Fallback to LocalStorage
         console.log("Loading state from LocalStorage (Offline Mode)");
         const localData = getLocalDb();
         
-        // Transform Local DB format to App State format
+        notifyTransaction({ id: txId, entity: 'DATABASE', name: 'Initial Load (Offline)', action: 'LOAD', status: 'OFFLINE_SYNC', timestamp: Date.now() });
+
         const ctt = localData.sites?.find((s: any) => s.id.includes('ctt')) || null;
         const btsStations = localData.sites?.filter((s: any) => !s.id.includes('ctt')) || [];
         
-        // Check if local data is effectively empty
         if (!ctt && btsStations.length === 0 && localData.liaisons.length === 0) {
-            return null; // Return null to trigger Default Initialization in Dashboard
+            return null;
         }
 
         return {
@@ -93,20 +150,15 @@ export const apiService = {
         };
     },
 
-    // Initialize defaults if DB is empty (Remote & Local)
     initializeDefaults: async (data: any) => {
-        // 1. Init Remote
         try {
             await fetch(`${API_URL}/init-defaults`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
-        } catch (error) {
-            // Ignored
-        }
-
-        // 2. Init Local
+        } catch (error) {}
+        
         const localFormat = {
             sites: [...data.btsStations, ...(data.ctt ? [data.ctt] : [])],
             liaisons: data.liaisons,
@@ -117,76 +169,75 @@ export const apiService = {
         saveLocalDb(localFormat);
     },
 
-    // --- PERSISTENCE METHODS (Hybrid: Try Remote, Always Save Local) ---
-    // UPDATED: Now returns { success: true, offline: true } instead of null on fetch error
+    // --- MONITORED PERSISTENCE METHODS ---
 
     saveSite: async (site: Bts | Ctt) => {
-        updateLocalItem('sites', site); // Always save local first
-        try {
-            const res = await fetch(`${API_URL}/sites`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(site)
-            });
-            return res.ok ? await res.json() : { success: true, offline: true };
-        } catch (e) { 
-            return { success: true, offline: true }; 
-        }
+        return monitoredRequest('SITE', site.name, async () => {
+            updateLocalItem('sites', site);
+            try {
+                const res = await fetch(`${API_URL}/sites`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(site)
+                });
+                return res.ok ? await res.json() : { success: true, offline: true };
+            } catch (e) { return { success: true, offline: true }; }
+        });
     },
 
     saveLiaison: async (liaison: Liaison) => {
-        updateLocalItem('liaisons', liaison);
-        try {
-            const res = await fetch(`${API_URL}/liaisons`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(liaison)
-            });
-            return res.ok ? await res.json() : { success: true, offline: true };
-        } catch (e) { 
-            return { success: true, offline: true }; 
-        }
+        return monitoredRequest('LIAISON', liaison.name, async () => {
+            updateLocalItem('liaisons', liaison);
+            try {
+                const res = await fetch(`${API_URL}/liaisons`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(liaison)
+                });
+                return res.ok ? await res.json() : { success: true, offline: true };
+            } catch (e) { return { success: true, offline: true }; }
+        });
     },
 
     saveActivity: async (activity: Activity) => {
-        updateLocalItem('activities', activity);
-        try {
-            const res = await fetch(`${API_URL}/activities`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(activity)
-            });
-            return res.ok ? await res.json() : { success: true, offline: true };
-        } catch (e) { 
-            return { success: true, offline: true }; 
-        }
+        return monitoredRequest('ACTIVITY', activity.title, async () => {
+            updateLocalItem('activities', activity);
+            try {
+                const res = await fetch(`${API_URL}/activities`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(activity)
+                });
+                return res.ok ? await res.json() : { success: true, offline: true };
+            } catch (e) { return { success: true, offline: true }; }
+        });
     },
 
     saveTicket: async (ticket: Ticket) => {
-        updateLocalItem('tickets', ticket);
-        try {
-            const res = await fetch(`${API_URL}/tickets`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(ticket)
-            });
-            return res.ok ? await res.json() : { success: true, offline: true };
-        } catch (e) { 
-            return { success: true, offline: true }; 
-        }
+        return monitoredRequest('TICKET', ticket.title, async () => {
+            updateLocalItem('tickets', ticket);
+            try {
+                const res = await fetch(`${API_URL}/tickets`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(ticket)
+                });
+                return res.ok ? await res.json() : { success: true, offline: true };
+            } catch (e) { return { success: true, offline: true }; }
+        });
     },
 
     saveMessage: async (message: ChatMessage) => {
-        updateLocalItem('messages', message);
-        try {
-            const res = await fetch(`${API_URL}/messages`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(message)
-            });
-            return res.ok ? await res.json() : { success: true, offline: true };
-        } catch (e) { 
-            return { success: true, offline: true }; 
-        }
+        return monitoredRequest('MESSAGE', 'Chat Log', async () => {
+            updateLocalItem('messages', message);
+            try {
+                const res = await fetch(`${API_URL}/messages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(message)
+                });
+                return res.ok ? await res.json() : { success: true, offline: true };
+            } catch (e) { return { success: true, offline: true }; }
+        });
     }
 };

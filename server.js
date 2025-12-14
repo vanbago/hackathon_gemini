@@ -17,6 +17,13 @@ app.use(express.json({ limit: '50mb' }));
 const log = (level, message, meta = {}) => {
     const timestamp = new Date().toISOString();
     console.log(JSON.stringify({ timestamp, level, message, ...meta }));
+    // Persist log to DB if DB is ready
+    if(db) {
+        db.run("INSERT INTO system_logs (level, message, meta, timestamp) VALUES (?, ?, ?, ?)", 
+            [level, message, JSON.stringify(meta), timestamp], (err) => {
+                if(err) console.error("Log persist failed", err);
+            });
+    }
 };
 
 // Request Logger Middleware
@@ -27,16 +34,16 @@ app.use((req, res, next) => {
 
 // --- DATABASE SETUP (SQLite) ---
 if (!fs.existsSync(DB_PATH)) {
-    log('INFO', "Creating new database file", { path: DB_PATH });
+    console.log("Creating new database file at", DB_PATH);
     const fd = fs.openSync(DB_PATH, 'w');
     fs.closeSync(fd);
 }
 
 const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
-        log('ERROR', 'Error opening database', { error: err.message });
+        console.error('Error opening database', err.message);
     } else {
-        log('INFO', 'Connected to SQLite database.');
+        console.log('Connected to SQLite database.');
         initDb();
     }
 });
@@ -49,6 +56,8 @@ function initDb() {
         db.run(`CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, timestamp DATETIME, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
+        // NEW: Audit Log Table
+        db.run(`CREATE TABLE IF NOT EXISTS system_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, message TEXT, meta TEXT, timestamp DATETIME)`);
     });
 }
 
@@ -120,6 +129,7 @@ app.post('/api/init-defaults', async (req, res, next) => {
                     next(err);
                 } else {
                     stmtSite.finalize(); stmtLiaison.finalize(); stmtAct.finalize(); stmtTicket.finalize();
+                    log('INFO', 'Database Initialized with Defaults');
                     res.json({ success: true });
                 }
             });
@@ -134,6 +144,7 @@ app.post('/api/sites', async (req, res, next) => {
     const type = site.id.includes('ctt') ? 'CTT' : 'BTS';
     try { 
         await runQuery("INSERT OR REPLACE INTO sites (id, type, data) VALUES (?, ?, ?)", [site.id, type, JSON.stringify(site)]); 
+        log('INFO', `Site Saved: ${site.name}`, { id: site.id });
         res.json({ success: true }); 
     } catch (e) { next(e); }
 });
@@ -143,6 +154,7 @@ app.post('/api/liaisons', async (req, res, next) => {
     if (!liaison.id) return res.status(400).json({ error: "Missing liaison ID" });
     try { 
         await runQuery("INSERT OR REPLACE INTO liaisons (id, data) VALUES (?, ?)", [liaison.id, JSON.stringify(liaison)]); 
+        log('INFO', `Liaison Saved: ${liaison.name}`, { id: liaison.id, sections: liaison.sections?.length });
         res.json({ success: true }); 
     } catch (e) { next(e); }
 });
@@ -152,6 +164,7 @@ app.post('/api/activities', async (req, res, next) => {
     if (!activity.id) return res.status(400).json({ error: "Missing activity ID" });
     try { 
         await runQuery("INSERT OR REPLACE INTO activities (id, status, data) VALUES (?, ?, ?)", [activity.id, activity.status, JSON.stringify(activity)]); 
+        log('INFO', `Activity Saved: ${activity.title}`, { id: activity.id });
         res.json({ success: true }); 
     } catch (e) { next(e); }
 });
@@ -161,6 +174,7 @@ app.post('/api/tickets', async (req, res, next) => {
     if (!ticket.id) return res.status(400).json({ error: "Missing ticket ID" });
     try { 
         await runQuery("INSERT OR REPLACE INTO tickets (id, status, data) VALUES (?, ?, ?)", [ticket.id, ticket.status, JSON.stringify(ticket)]); 
+        log('INFO', `Ticket Saved: ${ticket.title}`, { id: ticket.id, status: ticket.status });
         res.json({ success: true }); 
     } catch (e) { next(e); }
 });
@@ -184,5 +198,6 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-    log('INFO', `Server running`, { port: PORT });
+    console.log(`Server running on port ${PORT}`);
+    log('INFO', `Server Started`, { port: PORT });
 });

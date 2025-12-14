@@ -7,11 +7,12 @@ import ManchonEditor from './ManchonEditor';
 interface FiberEditorProps {
   liaison: Liaison | null; // Null implies creating a new liaison
   availableNodes: (Bts | Ctt)[]; // NEW: List of available sites for routing
+  externalLiaisons?: Liaison[]; // NEW: All other liaisons for cross-referencing in ManchonEditor
   onSave: (updatedLiaison: Liaison) => void;
   onClose: () => void;
 }
 
-const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, availableNodes, onSave, onClose }) => {
+const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, availableNodes, externalLiaisons, onSave, onClose }) => {
   // --- STATE INIT ---
   const isNew = !initialLiaison;
   
@@ -25,15 +26,33 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
   const [sections, setSections] = useState<CableSection[]>(initialLiaison?.sections || []);
   const [infraPoints, setInfraPoints] = useState<InfrastructurePoint[]>(initialLiaison?.infrastructurePoints || []);
 
-  // Helpers needed early
-  const fiberColors = ["Bleu", "Orange", "Vert", "Marron", "Gris", "Blanc", "Rouge", "Noir", "Jaune", "Violet", "Rose", "Aqua"];
-  const generateStandardFibers = (count: number): FiberStrand[] => {
+  // --- COLOR DEFINITIONS ---
+  // STANDARD ITU-T (12 colors) - Used for Standard cables
+  const fiberColorsStandard = ["Bleu", "Orange", "Vert", "Marron", "Gris", "Blanc", "Rouge", "Noir", "Jaune", "Violet", "Rose", "Aqua"];
+  // SPECIAL SCHEME (Requested: Bleu, Rouge, Vert, Jaune, Violet, Blanc)
+  const fiberColorsSpecial = ["Bleu", "Rouge", "Vert", "Jaune", "Violet", "Blanc"];
+
+  const generateFibers = (count: number, scheme: 'STANDARD' | 'SPECIAL_MENGWA' = 'STANDARD'): FiberStrand[] => {
       const arr: FiberStrand[] = [];
+      
+      // Determine color palette and modulus
+      let colors = fiberColorsStandard;
+      let modulus = 12;
+
+      if (scheme === 'SPECIAL_MENGWA') {
+          colors = fiberColorsSpecial;
+          modulus = 6;
+      } else {
+          // Fallback logic for small standard cables (though standard usually is 12-based)
+          if (count <= 6) modulus = 6;
+          else if (count === 8) modulus = 8;
+      }
+
       for (let i = 0; i < count; i++) {
           arr.push({
               id: `f-${Date.now()}-${Math.random()}`,
               number: i + 1,
-              colorCode: fiberColors[i % 12],
+              colorCode: colors[i % modulus],
               status: 'CONTINU',
               serviceName: '',
               client: ''
@@ -65,12 +84,13 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
   // --- DERIVED STATE ---
   const activeSection = activeViewId ? sections.find(s => s.id === activeViewId) : null;
   const activeFiberCount = activeSection ? activeSection.fiberCount : (currentLiaisonObj.fiberCount || 12);
+  const activeColorScheme = activeSection?.colorScheme || 'STANDARD';
   
   // FIX 1: Auto-generate strands if missing in data but section exists (Fixes "Aucune donnée")
   const activeStrands = activeSection 
     ? (activeSection.fiberStrands && activeSection.fiberStrands.length > 0 
         ? activeSection.fiberStrands 
-        : generateStandardFibers(activeSection.fiberCount)) 
+        : generateFibers(activeSection.fiberCount, activeSection.colorScheme)) 
     : (initialLiaison?.fiberStrands || []);
 
   // Modals state
@@ -86,13 +106,118 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
     return map[colorName] || '#fff';
   };
 
-  const tubeConfig = { fibersPerTube: activeFiberCount >= 18 ? (activeFiberCount % 12 === 0 ? 12 : 6) : 12 }; // Simple approximation
-  const tubesCount = Math.ceil(activeFiberCount / tubeConfig.fibersPerTube);
+  // Determine Tube Configuration
+  let fibersPerTube = 12;
+  // Use specific color sequence for tubes if 4x6 or 3x6
+  let tubeColorSequence = fiberColorsStandard;
+
+  if (activeColorScheme === 'SPECIAL_MENGWA') {
+      fibersPerTube = 6; 
+      tubeColorSequence = fiberColorsStandard; // Tube colors themselves usually follow standard or numbers
+  } else {
+      // Standard Logic
+      if (activeFiberCount === 18) {
+          fibersPerTube = 6; 
+      } else if (activeFiberCount === 24) {
+          fibersPerTube = 6;
+      } else if (activeFiberCount <= 6) {
+          fibersPerTube = 6;
+      } else if (activeFiberCount === 8) {
+          fibersPerTube = 8;
+      } else {
+          fibersPerTube = 12;
+      }
+  }
+
+  const tubesCount = Math.ceil(activeFiberCount / fibersPerTube);
 
   const handleStrandChange = (id: string, field: keyof FiberStrand, value: any) => {
       if (activeSection) {
           const updatedStrands = activeStrands.map(s => s.id === id ? { ...s, [field]: value } : s);
           setSections(prev => prev.map(sec => sec.id === activeSection.id ? { ...sec, fiberStrands: updatedStrands } : sec));
+      }
+  };
+
+  // --- CRUD ACTIONS ---
+
+  const handleCreateSection = (startNodeId?: string) => {
+      const newSec: CableSection = {
+          id: `sec-${Date.now()}`,
+          name: startNodeId ? `Nouveau Câble (Départ)` : `Nouveau Tronçon ${sections.length + 1}`,
+          fiberCount: 12, 
+          cableType: 'Standard Souterrain',
+          lengthKm: 0,
+          startPointId: startNodeId,
+          colorScheme: 'STANDARD', // Default
+          fiberStrands: generateFibers(12, 'STANDARD')
+      };
+      setEditingSection(newSec);
+  };
+
+  const handleSaveSection = (updatedSection: CableSection) => {
+      let finalSection = updatedSection;
+      const existing = sections.find(s => s.id === updatedSection.id);
+      
+      // Regenerate fibers if Count OR Scheme changed
+      const countChanged = updatedSection.fiberCount !== (existing?.fiberCount || 0);
+      const schemeChanged = updatedSection.colorScheme !== (existing?.colorScheme || 'STANDARD');
+
+      if (countChanged || schemeChanged) {
+           // If manually edited strands exist, we might lose them, but structure change requires regen usually
+           if (!updatedSection.fiberStrands || updatedSection.fiberStrands.length !== updatedSection.fiberCount || schemeChanged) {
+               finalSection = { 
+                   ...updatedSection, 
+                   fiberStrands: generateFibers(updatedSection.fiberCount, updatedSection.colorScheme) 
+               };
+           }
+      }
+
+      if (existing) {
+          setSections(prev => prev.map(s => s.id === finalSection.id ? finalSection : s));
+      } else {
+          setSections(prev => [...prev, finalSection]);
+      }
+      
+      // Update global distance preview
+      if(finalSection.lengthKm) {
+          setDistanceKm(prev => prev + (finalSection.lengthKm || 0));
+      }
+
+      setEditingSection(null);
+  };
+
+  const handleDeleteSection = (sectionId: string) => {
+      if(window.confirm("Êtes-vous sûr de vouloir supprimer définitivement ce tronçon ?")) {
+          setSections(prev => prev.filter(s => s.id !== sectionId));
+          if (activeViewId === sectionId) setActiveViewId(null);
+          setEditingSection(null);
+      }
+  };
+
+  const handleCreateInfra = () => {
+      setEditingInfra({
+          id: `infra-${Date.now()}`,
+          name: 'Nouvelle Chambre',
+          type: InfrastructureType.CHAMBRE,
+          coordinates: { lat: 0, lng: 0 }, 
+          parentLiaisonId: currentLiaisonObj.id,
+          description: ''
+      });
+  };
+
+  const handleSaveInfra = (updatedInfra: InfrastructurePoint) => {
+      if (infraPoints.find(i => i.id === updatedInfra.id)) {
+          setInfraPoints(prev => prev.map(i => i.id === updatedInfra.id ? updatedInfra : i));
+      } else {
+          setInfraPoints(prev => [...prev, updatedInfra]);
+      }
+      setEditingInfra(null);
+  };
+
+  const handleDeleteInfra = (infraId: string) => {
+      if(window.confirm("Supprimer cette infrastructure (Manchon/Chambre) et ses épissures ?")) {
+          setInfraPoints(prev => prev.filter(i => i.id !== infraId));
+          setEditingInfra(null);
       }
   };
 
@@ -116,61 +241,6 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
         endCoordinates: finalEnd,
         distanceKm: totalDist > 0 ? parseFloat(totalDist.toFixed(3)) : distanceKm
     });
-  };
-
-  const handleSaveSection = (updatedSection: CableSection) => {
-      let finalSection = updatedSection;
-      if (updatedSection.fiberCount !== (sections.find(s => s.id === updatedSection.id)?.fiberCount || 0)) {
-           if (!updatedSection.fiberStrands || updatedSection.fiberStrands.length !== updatedSection.fiberCount) {
-               finalSection = { ...updatedSection, fiberStrands: generateStandardFibers(updatedSection.fiberCount) };
-           }
-      }
-      if (sections.find(s => s.id === finalSection.id)) {
-          setSections(prev => prev.map(s => s.id === finalSection.id ? finalSection : s));
-      } else {
-          setSections(prev => [...prev, finalSection]);
-      }
-      
-      // Update global distance preview
-      if(finalSection.lengthKm) {
-          setDistanceKm(prev => prev + (finalSection.lengthKm || 0));
-      }
-
-      setEditingSection(null);
-  };
-
-  const handleCreateSection = (startNodeId?: string) => {
-      // FIX 2: Better naming convention
-      const newSec: CableSection = {
-          id: `sec-${Date.now()}`,
-          name: startNodeId ? `Nouveau Câble (Départ)` : `Nouveau Tronçon ${sections.length + 1}`,
-          fiberCount: 12, 
-          cableType: 'Standard Souterrain',
-          lengthKm: 0,
-          startPointId: startNodeId,
-          fiberStrands: generateStandardFibers(12)
-      };
-      setEditingSection(newSec);
-  };
-
-  const handleSaveInfra = (updatedInfra: InfrastructurePoint) => {
-      if (infraPoints.find(i => i.id === updatedInfra.id)) {
-          setInfraPoints(prev => prev.map(i => i.id === updatedInfra.id ? updatedInfra : i));
-      } else {
-          setInfraPoints(prev => [...prev, updatedInfra]);
-      }
-      setEditingInfra(null);
-  };
-
-  const handleCreateInfra = () => {
-      setEditingInfra({
-          id: `infra-${Date.now()}`,
-          name: 'Nouvelle Chambre',
-          type: InfrastructureType.CHAMBRE,
-          coordinates: { lat: 0, lng: 0 }, 
-          parentLiaisonId: currentLiaisonObj.id,
-          description: ''
-      });
   };
 
   return (
@@ -247,20 +317,25 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
                                 <div className="absolute -left-[9px] top-4 w-4 h-0.5 bg-slate-700"></div>
                                 <div 
                                     onClick={() => setActiveViewId(sec.id)}
-                                    className={`p-2 rounded border cursor-pointer group ${isActive ? 'bg-teal-900/20 border-teal-500' : 'bg-slate-800 border-slate-700 hover:border-slate-500'}`}
+                                    className={`p-2 rounded border cursor-pointer group flex justify-between items-start ${isActive ? 'bg-teal-900/20 border-teal-500' : 'bg-slate-800 border-slate-700 hover:border-slate-500'}`}
                                 >
-                                    <div className="flex justify-between items-start">
-                                        <div>
-                                            <div className="text-xs font-bold text-slate-200 flex items-center gap-2">
-                                                <span className="text-slate-500 font-mono">#{idx+1}</span>
-                                                {sec.name}
-                                            </div>
-                                            <div className="text-[10px] text-slate-400 mt-1">
-                                                {sec.fiberCount} FO • {sec.cableType} • {sec.lengthKm}km
-                                            </div>
+                                    <div>
+                                        <div className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                                            <span className="text-slate-500 font-mono">#{idx+1}</span>
+                                            {sec.name}
                                         </div>
-                                        <button onClick={(e) => { e.stopPropagation(); setEditingSection(sec); }} className="text-slate-500 hover:text-white p-1">
+                                        <div className="text-[10px] text-slate-400 mt-1 flex gap-2">
+                                            <span>{sec.fiberCount} FO</span>
+                                            {sec.colorScheme === 'SPECIAL_MENGWA' && <span className="text-purple-400 font-bold bg-purple-900/30 px-1 rounded">Spécial</span>}
+                                            <span>{sec.lengthKm}km</span>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button onClick={(e) => { e.stopPropagation(); setEditingSection(sec); }} className="text-slate-500 hover:text-white p-1" title="Modifier">
                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                        </button>
+                                        <button onClick={(e) => { e.stopPropagation(); handleDeleteSection(sec.id); }} className="text-slate-500 hover:text-red-500 p-1" title="Supprimer">
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                                         </button>
                                     </div>
                                 </div>
@@ -277,12 +352,14 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
                      </div>
                      <div className="space-y-2">
                         {infraPoints.map((infra) => (
-                            <div key={infra.id} onClick={() => setEditingInfra(infra)} className="bg-slate-800 p-2 rounded border border-slate-700 hover:border-orange-500 cursor-pointer flex justify-between items-center">
+                            <div key={infra.id} onClick={() => setEditingInfra(infra)} className="bg-slate-800 p-2 rounded border border-slate-700 hover:border-orange-500 cursor-pointer flex justify-between items-center group">
                                 <div className="flex items-center gap-2">
                                     <div className={`w-2 h-2 rotate-45 ${infra.category === 'ARTERE' ? 'bg-red-500' : (infra.category === 'SEMI_ARTERE' ? 'bg-orange-500' : 'bg-purple-500')}`}></div>
                                     <div className="text-xs text-slate-300">{infra.name}</div>
                                 </div>
-                                <span className="text-[9px] bg-slate-900 px-1 rounded text-orange-300">Éditer</span>
+                                <button onClick={(e) => { e.stopPropagation(); handleDeleteInfra(infra.id); }} className="text-slate-600 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
                             </div>
                         ))}
                      </div>
@@ -298,9 +375,14 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
                     <h3 className="font-bold text-slate-200">
                         {activeSection ? `Matrice du Tronçon : ${activeSection.name}` : "Vue Globale (Théorique)"}
                     </h3>
-                    <p className="text-xs text-slate-400">
-                        {activeFiberCount} Fibres • {tubesCount} Tubes • {activeSection ? activeSection.cableType : 'Vue agrégée'}
-                    </p>
+                    <div className="text-xs text-slate-400 flex gap-2 items-center">
+                        <span>{activeFiberCount} Fibres • {tubesCount} Tubes • {activeSection ? activeSection.cableType : 'Vue agrégée'}</span>
+                        {activeColorScheme === 'SPECIAL_MENGWA' && (
+                            <span className="bg-purple-900 text-purple-200 px-1.5 rounded text-[9px] font-bold border border-purple-500/30">
+                                CODAGE SPÉCIAL (6 Coul)
+                            </span>
+                        )}
+                    </div>
                 </div>
                 {activeSection && (
                     <div className="px-3 py-1 bg-teal-900/30 border border-teal-500/30 text-teal-400 text-xs rounded font-bold animate-pulse">
@@ -315,8 +397,8 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
                  
                  {Array.from({ length: tubesCount }).map((_, tubeIndex) => {
                      const tubeNumber = tubeIndex + 1;
-                     const tubeColor = fiberColors[tubeIndex % 12];
-                     const fibersInThisTube = activeStrands.filter(s => Math.ceil(s.number / tubeConfig.fibersPerTube) === tubeNumber);
+                     const tubeColor = tubeColorSequence[tubeIndex % 12];
+                     const fibersInThisTube = activeStrands.filter(s => Math.ceil(s.number / fibersPerTube) === tubeNumber);
 
                      if(fibersInThisTube.length === 0) return null;
 
@@ -394,21 +476,25 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
           <button onClick={handleSaveLiaison} className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded shadow-lg">Enregistrer Tout</button>
         </div>
 
-        {/* Sub-Modals - FIX 3: Reordered so TronconEditor is ON TOP of ManchonEditor if triggered from it */}
+        {/* Sub-Modals */}
         {editingInfra && (
             <ManchonEditor 
                 infra={editingInfra}
-                liaisonContext={currentLiaisonObj} // Pass full context for topology
-                onSave={handleSaveInfra} 
-                onAddSection={(nodeId) => handleCreateSection(nodeId)} // Callback to create cable
+                liaisonContext={currentLiaisonObj} 
+                availableNodes={availableNodes} // PASSING NODES HERE
+                externalLiaisons={externalLiaisons} // PASSING EXTERNAL LIAISONS TO DETECT CROSS-CONNECTS
+                onSave={handleSaveInfra}
+                onDelete={() => handleDeleteInfra(editingInfra.id)} 
+                onAddSection={(nodeId) => handleCreateSection(nodeId)}
                 onClose={() => setEditingInfra(null)} 
             />
         )}
         {editingSection && (
             <TronconEditor 
                 section={editingSection} 
-                availableNodes={availableNodes} // PASS DOWN
+                availableNodes={availableNodes}
                 onSave={handleSaveSection} 
+                onDelete={() => handleDeleteSection(editingSection.id)}
                 onClose={() => setEditingSection(null)} 
             />
         )}

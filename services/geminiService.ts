@@ -116,11 +116,28 @@ const generateSystemInstruction = (data: ChatContextData): string => {
       return `- SITE: ${s.name} (${s.type}). Coords: [${s.coordinates.lat}, ${s.coordinates.lng}]. Équipements: ${equipementsList}.`;
   }).join('\n');
 
+  // Helper description code couleurs
+  const getColorDesc = (scheme?: string) => {
+      if (scheme === 'SPECIAL_MENGWA') return "CODE SPÉCIAL (1:Bleu, 2:Rouge, 3:Vert, 4:Jaune, 5:Violet, 6:Blanc)";
+      return "STANDARD ITU-T (1:Bleu, 2:Orange, 3:Vert, 4:Marron, 5:Gris, 6:Blanc...)";
+  };
+
   // 2. Liste des Liaisons Détaillées
   const liaisonsInfo = data.liaisons.map(l => {
-      const sectionsInfo = l.sections?.map((sec, idx) => 
-          `   * Tronçon #${idx+1} "${sec.name}": ${sec.fiberCount}FO (${sec.cableType}), ${sec.lengthKm}km.`
-      ).join('\n') || '   * Pas de tronçons définis.';
+      const sectionsInfo = l.sections?.map((sec, idx) => {
+          // Add Fiber Details if available
+          let fiberDetails = '';
+          if (sec.fiberStrands && sec.fiberStrands.length > 0) {
+              const usedStrands = sec.fiberStrands.filter(f => f.status === 'USE').map(f => 
+                  `Brin #${f.number} (${f.colorCode}): ${f.serviceName}`
+              ).join('; ');
+              fiberDetails = `      Services actifs: [${usedStrands}]`;
+          }
+          
+          const colorInfo = getColorDesc(sec.colorScheme);
+          
+          return `   * Tronçon #${idx+1} "${sec.name}": ${sec.fiberCount}FO (${sec.cableType}), ${sec.lengthKm}km.\n     Config: ${colorInfo}\n${fiberDetails}`;
+      }).join('\n') || '   * Pas de tronçons définis.';
       
       const infraInfo = l.infrastructurePoints?.map(inf => 
           `   * Infra: ${inf.name} (${inf.type}) à [${inf.coordinates.lat}, ${inf.coordinates.lng}].`
@@ -136,15 +153,16 @@ const generateSystemInstruction = (data: ChatContextData): string => {
   Connecte: [${l.startCoordinates.lat},${l.startCoordinates.lng}] -> [${l.endCoordinates.lat},${l.endCoordinates.lng}]
   Détails Structurels:
 ${sectionsInfo}
-  Infrastructures Intermédiaires:
+  Infrastructures Intermédiaires (Manchons/Chambres):
 ${infraInfo}
 `;
   }).join('\n');
 
   return `Tu es l'Assistant Architecture du Centre de Transmission. 
-  Ton rôle est de répondre EXCLUSIVEMENT aux questions techniques sur la topologie du réseau, les équipements et les câbles.
+  Ton rôle est de répondre EXCLUSIVEMENT aux questions techniques sur la topologie du réseau, les équipements, les couleurs de fibre et les câbles.
   
   Tu as accès à la base de données complète en temps réel ci-dessous.
+  Chaque tronçon de câble précise son schéma de couleur (Standard vs Spécial). Utilise cette information pour identifier la couleur d'un brin spécifique (ex: Brin 2 est Rouge en code spécial, mais Orange en standard).
 
   === BASE DE DONNÉES ARCHITECTURE ===
   
@@ -159,7 +177,7 @@ ${infraInfo}
   DIRECTIVES:
   1. Si on te demande "Quelle est la distance entre X et Y", cherche la liaison correspondante et donne la distance exacte.
   2. Si on te demande "Quels sont les équipements à X", liste-les avec leur statut.
-  3. Si on te demande "Détaille le câble X", donne les tronçons, le type de câble et le nombre de brins.
+  3. Si on te demande "Détaille le câble X" ou "Quelle est la couleur du brin Y", réfère-toi à la configuration "Config" du tronçon concerné.
   4. Sois précis, technique et concis. Utilise le format Markdown pour la lisibilité.
   5. Si une information n'est pas dans la base (ex: liste vide), dis-le clairement.
   `;

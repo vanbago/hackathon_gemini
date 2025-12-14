@@ -202,6 +202,9 @@ export interface CableSection {
   isHosted?: boolean; // Si True, les brins passent dans le câble d'une autre liaison (Gaine Partagée)
   lengthKm?: number;
   
+  // New: Color Scheme Definition
+  colorScheme?: 'STANDARD' | 'SPECIAL_MENGWA'; // STANDARD (Blue/Orange) vs SPECIAL (Blue/Red/Green/Yellow...)
+
   // Chaque tronçon a sa propre définition physique des brins
   fiberStrands?: FiberStrand[]; 
 }
