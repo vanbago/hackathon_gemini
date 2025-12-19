@@ -1,2 +1,5 @@
 
-# Backend moved to Node.js (see server.js)
+# Backend powered by Bun
+# To run: 
+# 1. Install Bun (https://bun.sh)
+# 2. Run: bun run server.ts

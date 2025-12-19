@@ -1,4 +1,5 @@
 
+
 const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
@@ -54,8 +55,8 @@ function initDb() {
         db.run(`CREATE TABLE IF NOT EXISTS sites (id TEXT PRIMARY KEY, type TEXT, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS liaisons (id TEXT PRIMARY KEY, data TEXT)`); 
         db.run(`CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
-        db.run(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, timestamp DATETIME, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
+        db.run(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, data TEXT)`);
         // NEW: Audit Log Table
         db.run(`CREATE TABLE IF NOT EXISTS system_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, message TEXT, meta TEXT, timestamp DATETIME)`);
     });
@@ -83,24 +84,24 @@ const getQuery = (query, params = []) => {
 // 1. GET INITIAL STATE
 app.get('/api/state', async (req, res, next) => {
     try {
-        const [sitesRows, liaisonsRows, activitiesRows, messagesRows, ticketsRows] = await Promise.all([
+        const [sitesRows, liaisonsRows, activitiesRows, ticketsRows, messagesRows] = await Promise.all([
             getQuery("SELECT data FROM sites"),
             getQuery("SELECT data FROM liaisons"),
             getQuery("SELECT data FROM activities"),
-            getQuery("SELECT data FROM messages ORDER BY timestamp ASC"),
-            getQuery("SELECT data FROM tickets")
+            getQuery("SELECT data FROM tickets"),
+            getQuery("SELECT data FROM messages")
         ]);
 
         const sites = sitesRows.map(r => JSON.parse(r.data));
         const liaisons = liaisonsRows.map(r => JSON.parse(r.data));
         const activities = activitiesRows.map(r => JSON.parse(r.data));
-        const messages = messagesRows.map(r => JSON.parse(r.data));
         const tickets = ticketsRows ? ticketsRows.map(r => JSON.parse(r.data)) : [];
+        const messages = messagesRows ? messagesRows.map(r => JSON.parse(r.data)) : [];
 
         const ctt = sites.find(s => s.id.includes('ctt')) || null;
         const btsStations = sites.filter(s => !s.id.includes('ctt'));
 
-        res.json({ ctt, btsStations, liaisons, activities, messages, tickets });
+        res.json({ ctt, btsStations, liaisons, activities, tickets, messages });
     } catch (error) {
         next(error);
     }
@@ -180,10 +181,11 @@ app.post('/api/tickets', async (req, res, next) => {
 });
 
 app.post('/api/messages', async (req, res, next) => {
-    const msg = req.body;
-    if (!msg.id) return res.status(400).json({ error: "Missing message ID" });
+    const message = req.body;
+    if (!message.id) return res.status(400).json({ error: "Missing message ID" });
     try { 
-        await runQuery("INSERT OR REPLACE INTO messages (id, timestamp, data) VALUES (?, ?, ?)", [msg.id, msg.timestamp, JSON.stringify(msg)]); 
+        await runQuery("INSERT OR REPLACE INTO messages (id, data) VALUES (?, ?)", [message.id, JSON.stringify(message)]); 
+        log('INFO', `Message Saved from ${message.sender}`, { id: message.id });
         res.json({ success: true }); 
     } catch (e) { next(e); }
 });

@@ -1,32 +1,10 @@
 
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Activity, ActivityStatus, Bts, Liaison, LiaisonStatus, Ticket, TicketPriority, TicketStatus, TicketType, Operator, ActivityContext, InfrastructureType, ChatMessage } from "../types";
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-/**
- * Parses a raw WhatsApp export text file into structured ChatMessage objects.
- */
-export const parseWhatsAppExport = (text: string): ChatMessage[] => {
-    const lines = text.split('\n');
-    const messages: ChatMessage[] = [];
-    const regex = /^\[?(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4},?\s\d{1,2}:\d{2}(?::\d{2})?)\]?(?:\s-\s)?\s([^:]+):\s(.+)$/;
-
-    lines.forEach((line, index) => {
-        const match = line.match(regex);
-        if (match) {
-            messages.push({
-                id: `wa-import-${Date.now()}-${index}`,
-                sender: match[2].trim(),
-                content: match[3].trim(),
-                timestamp: match[1],
-                processed: false
-            });
-        }
-    });
-    return messages;
-};
 
 // Helper to safely parse JSON from AI which might wrap it in markdown code blocks
 const safeJsonParse = (text: string | undefined) => {
@@ -39,6 +17,27 @@ const safeJsonParse = (text: string | undefined) => {
         console.error("Gemini JSON Parse Error:", e, "Raw Text:", text);
         return null;
     }
+};
+
+export const parseWhatsAppExport = (text: string): ChatMessage[] => {
+  const messages: ChatMessage[] = [];
+  const lines = text.split('\n');
+  // Regex covers: "DD/MM/YY, HH:MM - Sender: Message" and "[DD/MM/YY, HH:MM:SS] Sender: Message"
+  const regex = /^\[?(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4},?\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s+[AP]M)?)\]?(?:\s+-\s+|\s+)([^:]+):\s+(.+)$/;
+
+  lines.forEach((line, index) => {
+    const match = line.match(regex);
+    if (match) {
+      messages.push({
+        id: `msg-imp-${Date.now()}-${index}`,
+        timestamp: match[1],
+        sender: match[2].trim(),
+        content: match[3].trim(),
+        isAnalyzed: false
+      });
+    }
+  });
+  return messages;
 };
 
 export const extractActivityFromText = async (text: string): Promise<Partial<Activity> | null> => {

@@ -1,5 +1,6 @@
 
-import { Activity, Bts, Ctt, Liaison, ChatMessage, Ticket } from "../types";
+
+import { Activity, Bts, Ctt, Liaison, Ticket, ChatMessage } from "../types";
 
 const API_URL = "http://localhost:3001/api";
 const LOCAL_STORAGE_KEY = "transmission_db_v1";
@@ -67,9 +68,9 @@ const monitoredRequest = async (entity: string, name: string, requestFn: () => P
 const getLocalDb = () => {
     try {
         const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
-        return stored ? JSON.parse(stored) : { sites: [], liaisons: [], activities: [], messages: [], tickets: [] };
+        return stored ? JSON.parse(stored) : { sites: [], liaisons: [], activities: [], tickets: [], messages: [] };
     } catch (e) {
-        return { sites: [], liaisons: [], activities: [], messages: [], tickets: [] };
+        return { sites: [], liaisons: [], activities: [], tickets: [], messages: [] };
     }
 };
 
@@ -119,8 +120,8 @@ export const apiService = {
                     sites: [...(data.btsStations || []), ...(data.ctt ? [data.ctt] : [])],
                     liaisons: data.liaisons || [],
                     activities: data.activities || [],
-                    messages: data.messages || [],
-                    tickets: data.tickets || []
+                    tickets: data.tickets || [],
+                    messages: data.messages || []
                 };
                 saveLocalDb(localFormat);
                 notifyTransaction({ id: txId, entity: 'DATABASE', name: 'Initial Load', action: 'LOAD', status: 'SUCCESS', timestamp: Date.now() });
@@ -145,8 +146,8 @@ export const apiService = {
             btsStations,
             liaisons: localData.liaisons || [],
             activities: localData.activities || [],
-            messages: localData.messages || [],
-            tickets: localData.tickets || []
+            tickets: localData.tickets || [],
+            messages: localData.messages || []
         };
     },
 
@@ -163,7 +164,6 @@ export const apiService = {
             sites: [...data.btsStations, ...(data.ctt ? [data.ctt] : [])],
             liaisons: data.liaisons,
             activities: data.activities,
-            messages: [],
             tickets: data.tickets
         };
         saveLocalDb(localFormat);
@@ -228,7 +228,7 @@ export const apiService = {
     },
 
     saveMessage: async (message: ChatMessage) => {
-        return monitoredRequest('MESSAGE', 'Chat Log', async () => {
+        return monitoredRequest('MESSAGE', `Message from ${message.sender}`, async () => {
             updateLocalItem('messages', message);
             try {
                 const res = await fetch(`${API_URL}/messages`, {

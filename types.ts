@@ -1,4 +1,5 @@
 
+
 export enum ActivityStatus {
   PENDING = 'PENDING',
   IN_PROGRESS = 'IN_PROGRESS',
@@ -34,15 +35,6 @@ export interface Activity {
   technician?: string;
   imageUrl?: string;
   linkedDocumentId?: string;
-}
-
-export interface ChatMessage {
-  id: string;
-  sender: string;
-  content: string;
-  timestamp: string;
-  processed: boolean;
-  source?: 'SIMULATION' | 'WHATSAPP_API' | 'IMPORT'; // Added source field
 }
 
 export interface ReportConfig {
@@ -186,7 +178,17 @@ export interface FiberStrand {
   client?: string; // e.g., "MTN", "CAMTEL-INTERNE"
 }
 
-// --- NOUVEAU: TRONÇONS DE CÂBLE ---
+// --- NOUVEAU: STANDARDS DE FIBRE ---
+export interface FiberStandard {
+  id: string;
+  name: string;
+  fiberCount: number;
+  tubes: number;
+  fibersPerTube: number;
+  colors: string[]; // Sequence of colors to use
+}
+
+// --- TRONÇONS DE CÂBLE ---
 export interface CableSection {
   id: string;
   name: string; // ex: "Tronçon Mbalmayo-K4"
@@ -202,8 +204,9 @@ export interface CableSection {
   isHosted?: boolean; // Si True, les brins passent dans le câble d'une autre liaison (Gaine Partagée)
   lengthKm?: number;
   
-  // New: Color Scheme Definition
-  colorScheme?: 'STANDARD' | 'SPECIAL_MENGWA'; // STANDARD (Blue/Orange) vs SPECIAL (Blue/Red/Green/Yellow...)
+  // Updated: Color Scheme Definition
+  colorScheme?: 'STANDARD' | 'SPECIAL_MENGWA'; // Deprecated but kept for compatibility
+  standardId?: string; // Reference to FiberStandard ID (The new source of truth)
 
   // Chaque tronçon a sa propre définition physique des brins
   fiberStrands?: FiberStrand[]; 
@@ -330,4 +333,12 @@ export interface MaintenanceDocument {
 
 export enum DashboardTab {
   ASSISTANT = 'ASSISTANT'
+}
+
+export interface ChatMessage {
+  id: string;
+  sender: string;
+  content: string;
+  timestamp: string;
+  isAnalyzed?: boolean;
 }

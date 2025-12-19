@@ -1,5 +1,6 @@
 
-import { Activity, ChatMessage, Ctt, Bts, Liaison, Ticket, Operator, Coordinates, LiaisonType, LiaisonStatus, TicketType, TicketPriority, TicketStatus, ActivityStatus, LiaisonCategory, ActivityContext, SiteType, AppNotification, PlanningEntry, InfrastructureType, FiberStrand, EquipmentType, Equipment, PowerStatus, PowerSource, InfrastructureCategory, InfrastructurePoint } from "./types";
+
+import { Activity, Ctt, Bts, Liaison, Ticket, Operator, Coordinates, LiaisonType, LiaisonStatus, TicketType, TicketPriority, TicketStatus, ActivityStatus, LiaisonCategory, ActivityContext, SiteType, AppNotification, PlanningEntry, InfrastructureType, FiberStrand, EquipmentType, Equipment, PowerStatus, PowerSource, InfrastructureCategory, InfrastructurePoint, FiberStandard } from "./types";
 
 interface AppState {
   activities: Activity[];
@@ -11,7 +12,7 @@ interface AppState {
   planning: PlanningEntry[];
 }
 
-const STORAGE_KEY = 'transmissionCenterAI_state_v20_configured'; 
+const STORAGE_KEY = 'transmissionCenterAI_state_v22_topology'; 
 
 export const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
     const R = 6371; 
@@ -36,27 +37,59 @@ export const saveState = (state: AppState) => {
   } catch (error) { console.error(error); }
 };
 
-// --- FIBER GENERATION UTILS ---
+// --- FIBER GENERATION UTILS & STANDARDS DATABASE ---
 
-// STANDARD ITU-T (12 colors)
-const fiberColorsStandard = ["Bleu", "Orange", "Vert", "Marron", "Gris", "Blanc", "Rouge", "Noir", "Jaune", "Violet", "Rose", "Aqua"];
-// SPECIAL SCHEME (Requested: Bleu, Rouge, Vert, Jaune, Violet, Blanc)
-const fiberColorsSpecial = ["Bleu", "Rouge", "Vert", "Jaune", "Violet", "Blanc"];
+// Common Colors
+const CLR_STD_12 = ["Bleu", "Orange", "Vert", "Marron", "Gris", "Blanc", "Rouge", "Noir", "Jaune", "Violet", "Rose", "Aqua"];
+const CLR_SPEC_MENGWA = ["Bleu", "Rouge", "Vert", "Jaune", "Violet", "Blanc"];
+const CLR_STD_6 = ["Bleu", "Orange", "Vert", "Marron", "Gris", "Blanc"]; // First 6 of IEC
 
-const generateFibers = (count: number, services: {idx: number, name: string, client?: string, colorCodeOverride?: string}[], idPrefix?: string, scheme: 'STANDARD' | 'SPECIAL_MENGWA' = 'STANDARD'): FiberStrand[] => {
+export const FIBER_STANDARDS: FiberStandard[] = [
+    // --- STANDARDS ITU-T / IEC (Génériques) ---
+    { id: 'STD_12_1x12', name: 'Standard 12 FO (Monotube)', fiberCount: 12, tubes: 1, fibersPerTube: 12, colors: CLR_STD_12 },
+    { id: 'STD_24_2x12', name: 'Standard 24 FO (2 Tubes x 12)', fiberCount: 24, tubes: 2, fibersPerTube: 12, colors: CLR_STD_12 },
+    { id: 'STD_48_4x12', name: 'Standard 48 FO (4 Tubes x 12)', fiberCount: 48, tubes: 4, fibersPerTube: 12, colors: CLR_STD_12 },
+    { id: 'STD_72_6x12', name: 'Standard 72 FO (6 Tubes x 12)', fiberCount: 72, tubes: 6, fibersPerTube: 12, colors: CLR_STD_12 },
+    { id: 'STD_96_8x12', name: 'Standard 96 FO (8 Tubes x 12)', fiberCount: 96, tubes: 8, fibersPerTube: 12, colors: CLR_STD_12 },
+    { id: 'STD_144_12x12', name: 'Standard 144 FO (12 Tubes x 12)', fiberCount: 144, tubes: 12, fibersPerTube: 12, colors: CLR_STD_12 },
     
-    let colors = fiberColorsStandard;
-    let modulus = 12;
+    // --- STANDARDS SPÉCIFIQUES (Demandés) ---
+    { 
+        id: 'STD_24_4x6_CAM', 
+        name: 'Standard 24 FO (4 Tubes x 6) - B,O,V,M,G,B', 
+        fiberCount: 24, 
+        tubes: 4, 
+        fibersPerTube: 6, 
+        colors: CLR_STD_6 
+    },
+    { 
+        id: 'SPEC_MENGWA_18', 
+        name: 'Spécial Mengbwa 18 FO (3 Tubes x 6) - Code Spécial', 
+        fiberCount: 18, 
+        tubes: 3, 
+        fibersPerTube: 6, 
+        colors: CLR_SPEC_MENGWA 
+    },
+    
+    // --- LAST MILE / ACCÈS ---
+    { id: 'DROP_6_1x6', name: 'Drop Cable 6 FO (Accès)', fiberCount: 6, tubes: 1, fibersPerTube: 6, colors: CLR_STD_6 },
+    { id: 'DROP_8_1x8', name: 'Drop Cable 8 FO (Spécial)', fiberCount: 8, tubes: 1, fibersPerTube: 8, colors: CLR_STD_12.slice(0, 8) },
+];
 
-    if (scheme === 'SPECIAL_MENGWA') {
-        colors = fiberColorsSpecial;
-        modulus = 6;
-    }
+export const getFiberStandard = (id?: string) => FIBER_STANDARDS.find(s => s.id === id);
 
+// Generates fibers based on a Standard Object
+export const generateFibersFromStandard = (standardId: string, services: {idx: number, name: string, client?: string, colorCodeOverride?: string}[] = [], idPrefix?: string): FiberStrand[] => {
+    const standard = getFiberStandard(standardId) || FIBER_STANDARDS[0]; // Default to 12 FO if not found
     const strands: FiberStrand[] = [];
-    for (let i = 0; i < count; i++) {
-        const defaultColor = colors[i % modulus];
+    
+    for (let i = 0; i < standard.fiberCount; i++) {
+        const fibersPerTube = standard.fibersPerTube;
+        // Safety: Ensure colors array is long enough, loop if necessary
+        const defaultColor = standard.colors[i % fibersPerTube]; // Use modulo of fibers per tube to reset color index for new tube
+        
         const assignedService = services.find(s => s.idx === i + 1);
+        
         strands.push({
             id: idPrefix ? `${idPrefix}-${i + 1}` : `f-${i}-${Date.now()}-${Math.random()}`, 
             number: i + 1,
@@ -104,8 +137,12 @@ export const initializeDefaultState = (): AppState => {
   // --- INFRASTRUCTURE CLÉ (NOEUDS) ---
   const zoatoupsiJunctionCoords: Coordinates = { lat: 3.459933, lng: 11.513630 }; // Point de split SANGMELIMA / EBOLOWA
   const carrefourSangmelimaCoords: Coordinates = { lat: 3.467063, lng: 11.514433 }; 
-  const ndickChambreCoords: Coordinates = { lat: 3.476718, lng: 11.656796 };
   
+  // -- Coordonnées des Chambres de Piquage (Décalage simulant bord de route ~20m des BTS) --
+  const ndickChambreCoords: Coordinates = { lat: 3.476718, lng: 11.656796 };
+  const menguemeChambreCoords: Coordinates = { lat: 3.436850, lng: 11.700150 }; // Légèrement décalé de la BTS Mengueme
+  const metetChambreCoords: Coordinates = { lat: 3.433550, lng: 11.772150 }; // Légèrement décalé de la BTS Metet
+
   // --- CONFIGURATION DÉTAILLÉE MANCHON ZOATOUPSI ---
   const manchonZoatoupsi: InfrastructurePoint = {
       id: 'ch-manchon-zoatoupsi', 
@@ -117,13 +154,9 @@ export const initializeDefaultState = (): AppState => {
       description: 'Éclatement Backbone Sud. Entrée 48FO Mbalmayo -> Sortie 24FO Ebanga + Sortie 48FO Sangmélima.',
       splicingConfig: {
           connections: [
-              // Brin 1 (Bleu) Arrivée -> Brin 1 (Bleu) Départ Ebanga
               { incomingStrandId: 'sec-mbyo-zoa-1', outgoingStrandId: 'sec-zoa-eba-1', status: 'SPLICED' },
-              // Brin 2 (Orange) Arrivée -> Brin 2 (Orange) Départ Ebanga (Secours)
               { incomingStrandId: 'sec-mbyo-zoa-2', outgoingStrandId: 'sec-zoa-eba-2', status: 'SPLICED' },
-              // Brin 3 (Vert) Arrivée -> Brin 1 (Bleu) Départ Sangmélima (Transit)
               { incomingStrandId: 'sec-mbyo-zoa-3', outgoingStrandId: 'sec-zoa-sang-1', status: 'SPLICED' },
-              // Brin 4 (Marron) Arrivée -> Brin 2 (Orange) Départ Sangmélima (Transit)
               { incomingStrandId: 'sec-mbyo-zoa-4', outgoingStrandId: 'sec-zoa-sang-2', status: 'SPLICED' }
           ]
       }
@@ -139,49 +172,88 @@ export const initializeDefaultState = (): AppState => {
       description: 'PK 28.5. Piquage pour le site LTE Ndick.',
       splicingConfig: {
           connections: [
-              // Brin 8 (Extraction) -> Brin 1 Last Mile Ndick
               { incomingStrandId: 'sec-mbyo-ndick-8', outgoingStrandId: 'lm-ndick-1', status: 'SPLICED' },
-              // Brin 12 (Extraction Secours) -> Brin 2 Last Mile Ndick
               { incomingStrandId: 'sec-mbyo-ndick-12', outgoingStrandId: 'lm-ndick-2', status: 'SPLICED' },
-              // Brin 1 (Continuité) -> Brin 1 Départ Mengueme
               { incomingStrandId: 'sec-mbyo-ndick-1', outgoingStrandId: 'sec-ndick-mengueme-1', status: 'SPLICED' },
-              // Brin 2 (Continuité) -> Brin 2 Départ Mengueme
               { incomingStrandId: 'sec-mbyo-ndick-2', outgoingStrandId: 'sec-ndick-mengueme-2', status: 'SPLICED' }
           ]
       }
   };
 
+  const manchonMengueme: InfrastructurePoint = {
+      id: 'ch-mengueme-piquage',
+      type: InfrastructureType.CHAMBRE,
+      category: InfrastructureCategory.SEMI_ARTERE,
+      name: 'Chambre Piquage Mengueme',
+      coordinates: menguemeChambreCoords,
+      parentLiaisonId: 'bb-mbyo-mengbwa',
+      description: 'Piquage site Mengueme. Entrée 24FO -> Sortie 18FO (Vers Metet) + Drop 12FO (Site).',
+      splicingConfig: {
+          connections: [
+              // Extraction des brins 9 et 10 pour Mengueme (Tube 2 - Orange en standard 4x6)
+              { incomingStrandId: 'sec-ndick-mengueme-9', outgoingStrandId: 'lm-mengueme-1', status: 'SPLICED' },
+              { incomingStrandId: 'sec-ndick-mengueme-10', outgoingStrandId: 'lm-mengueme-2', status: 'SPLICED' },
+              // Continuité du Backbone (Tube 1 - Bleu) vers Metet
+              { incomingStrandId: 'sec-ndick-mengueme-1', outgoingStrandId: 'sec-mengueme-metet-1', status: 'SPLICED' },
+              { incomingStrandId: 'sec-ndick-mengueme-2', outgoingStrandId: 'sec-mengueme-metet-2', status: 'SPLICED' },
+              { incomingStrandId: 'sec-ndick-mengueme-3', outgoingStrandId: 'sec-mengueme-metet-3', status: 'SPLICED' }
+          ]
+      }
+  };
+
+  const manchonMetet: InfrastructurePoint = {
+      id: 'ch-metet-piquage',
+      type: InfrastructureType.CHAMBRE,
+      category: InfrastructureCategory.SEMI_ARTERE,
+      name: 'Chambre Piquage Metet',
+      coordinates: metetChambreCoords,
+      parentLiaisonId: 'bb-mbyo-mengbwa',
+      description: 'Piquage site Metet. Entrée 18FO -> Sortie 18FO (Vers Mengbwa) + Drop 12FO (Site).',
+      splicingConfig: {
+          connections: [
+              // Extraction des brins 11 et 12 pour Metet (Tube 2 - Rouge en Spécial Mengwa)
+              { incomingStrandId: 'sec-mengueme-metet-11', outgoingStrandId: 'lm-metet-1', status: 'SPLICED' },
+              { incomingStrandId: 'sec-mengueme-metet-12', outgoingStrandId: 'lm-metet-2', status: 'SPLICED' },
+              // Continuité vers Mengbwa
+              { incomingStrandId: 'sec-mengueme-metet-1', outgoingStrandId: 'sec-metet-mengbwa-1', status: 'SPLICED' },
+              { incomingStrandId: 'sec-mengueme-metet-2', outgoingStrandId: 'sec-metet-mengbwa-2', status: 'SPLICED' }
+          ]
+      }
+  };
+
   const liaisons: Liaison[] = [
-    // --- LIAISON 1: MBALMAYO - AKONO (Nouveau) ---
+    // --- LIAISON 1: MBALMAYO - AKONO ---
     {
         id: 'bb-mbyo-akono', name: 'Liaison Mbalmayo-Akono', type: LiaisonType.FIBER, status: LiaisonStatus.OPERATIONAL, category: LiaisonCategory.LAST_MILE,
         startCoordinates: mbalmayoCtt.coordinates, endCoordinates: getBtsCoords('site-akono', btsStations),
         distanceKm: 22.5, fiberCount: 24, controlledByCttId: mbalmayoCtt.id, associatedBtsIds: ['site-akono'],
         color: '#f43f5e', // Rose/Red
-        fiberStrands: generateFibers(24, [{ idx: 1, name: "Services Akono" }]),
+        fiberStrands: generateFibersFromStandard('STD_24_4x6_CAM', [{ idx: 1, name: "Services Akono" }]),
         sections: [
             { 
                 id: 'sec-mbyo-akono-direct', 
                 name: 'Section Unique Mbyo-Akono', 
                 fiberCount: 24, cableType: '24FO Aérien ADSS', lengthKm: 22.5,
+                standardId: 'STD_24_4x6_CAM',
                 startCoordinate: mbalmayoCtt.coordinates,
                 endCoordinate: getBtsCoords('site-akono', btsStations)
             }
         ]
     },
 
-    // --- LIAISON 2: EBANGA - EBOLOWA (Extension Sud) ---
+    // --- LIAISON 2: EBANGA - EBOLOWA ---
     {
         id: 'bb-ebanga-ebolowa', name: 'Backbone Ebanga-Ebolowa', type: LiaisonType.FIBER, status: LiaisonStatus.OPERATIONAL, category: LiaisonCategory.BACKBONE,
         startCoordinates: getBtsCoords('site-ebanga', btsStations), endCoordinates: getBtsCoords('site-ebolowa', btsStations),
         distanceKm: 45.0, fiberCount: 48, controlledByCttId: mbalmayoCtt.id, associatedBtsIds: ['site-ebolowa'],
         color: '#0ea5e9', // Sky Blue (Suite de Mbyo-Ebanga)
-        fiberStrands: generateFibers(48, [{ idx: 1, name: "Backbone Sud (Ebolowa)" }]),
+        fiberStrands: generateFibersFromStandard('STD_48_4x12', [{ idx: 1, name: "Backbone Sud (Ebolowa)" }]),
         sections: [
             {
                 id: 'sec-ebanga-ebolowa-1',
                 name: 'Ebanga -> Ebolowa Entrée',
                 fiberCount: 48, cableType: '48FO Souterrain', lengthKm: 45.0,
+                standardId: 'STD_48_4x12',
                 startCoordinate: getBtsCoords('site-ebanga', btsStations),
                 endCoordinate: getBtsCoords('site-ebolowa', btsStations)
             }
@@ -194,10 +266,10 @@ export const initializeDefaultState = (): AppState => {
       startCoordinates: mbalmayoCtt.coordinates, endCoordinates: getBtsCoords('site-yaounde', btsStations),
       distanceKm: 50.0, fiberCount: 96, controlledByCttId: mbalmayoCtt.id, associatedBtsIds: ['site-yaounde', 'site-nsimalen'],
       color: '#06b6d4', // Cyan
-      fiberStrands: generateFibers(96, [{ idx: 1, name: "STM-64 Backbone Ydé-Mbyo" }, { idx: 2, name: "Protection MSP" }]),
+      fiberStrands: generateFibersFromStandard('STD_96_8x12', [{ idx: 1, name: "STM-64 Backbone Ydé-Mbyo" }, { idx: 2, name: "Protection MSP" }]),
       sections: [
-          { id: 'sec-mbyo-nsimalen', name: 'Tronçon Mbyo -> Nsimalen', fiberCount: 96, cableType: '96FO Souterrain (G.652D)', lengthKm: 35.0, startCoordinate: mbalmayoCtt.coordinates },
-          { id: 'sec-nsimalen-yde', name: 'Tronçon Nsimalen -> Yaoundé', fiberCount: 96, cableType: '96FO Souterrain', lengthKm: 15.0 }
+          { id: 'sec-mbyo-nsimalen', name: 'Tronçon Mbyo -> Nsimalen', fiberCount: 96, cableType: '96FO Souterrain (G.652D)', lengthKm: 35.0, startCoordinate: mbalmayoCtt.coordinates, standardId: 'STD_96_8x12' },
+          { id: 'sec-nsimalen-yde', name: 'Tronçon Nsimalen -> Yaoundé', fiberCount: 96, cableType: '96FO Souterrain', lengthKm: 15.0, standardId: 'STD_96_8x12' }
       ]
     },
 
@@ -220,8 +292,9 @@ export const initializeDefaultState = (): AppState => {
               endCoordinate: zoatoupsiJunctionCoords,
               startPointId: 'ctt-mbalmayo',
               endPointId: 'ch-manchon-zoatoupsi',
+              standardId: 'STD_48_4x12',
               // DETERMINISTIC FIBER IDS FOR SPLICING
-              fiberStrands: generateFibers(48, [
+              fiberStrands: generateFibersFromStandard('STD_48_4x12', [
                   { idx: 1, name: "Flux STM-16 Ebanga [Bleu]" },
                   { idx: 2, name: "Flux Secours Ebanga [Orange]" },
                   { idx: 3, name: "TRANSIT Mbyo-Sangmélima (Principal) [Vert]" }, 
@@ -236,7 +309,8 @@ export const initializeDefaultState = (): AppState => {
               endCoordinate: getBtsCoords('site-ebanga', btsStations),
               startPointId: 'ch-manchon-zoatoupsi',
               endPointId: 'site-ebanga',
-              fiberStrands: generateFibers(24, [
+              standardId: 'STD_24_4x6_CAM',
+              fiberStrands: generateFibersFromStandard('STD_24_4x6_CAM', [
                   { idx: 1, name: "Arrivée STM-16" },
                   { idx: 2, name: "Arrivée Secours" }
               ], 'sec-zoa-eba')
@@ -266,20 +340,21 @@ export const initializeDefaultState = (): AppState => {
                  name: 'Câble Physique Zoatoupsi -> Sangmelima', 
                  fiberCount: 48, cableType: '48FO Souterrain (Fonçage)', lengthKm: 108.4,
                  isHosted: false,
+                 standardId: 'STD_48_4x12',
                  startCoordinate: zoatoupsiJunctionCoords,
                  endCoordinate: getBtsCoords('site-sangmelima', btsStations),
                  startPointId: 'ch-manchon-zoatoupsi',
                  endPointId: 'site-sangmelima',
-                 fiberStrands: generateFibers(48, [
+                 fiberStrands: generateFibersFromStandard('STD_48_4x12', [
                      { idx: 1, name: "Arrivée SDH Mbyo-Sang (Principal)" }, 
                      { idx: 2, name: "Arrivée SDH Mbyo-Sang (Protection)" }
                  ], 'sec-zoa-sang')
              }
         ],
-        fiberStrands: generateFibers(48, [{ idx: 1, name: "SDH Mbyo-Sang (RX)" }, { idx: 2, name: "SDH Mbyo-Sang (TX)" }])
+        fiberStrands: generateFibersFromStandard('STD_48_4x12', [{ idx: 1, name: "SDH Mbyo-Sang (RX)" }, { idx: 2, name: "SDH Mbyo-Sang (TX)" }])
     },
 
-    // --- AXE EST (MENGBWA) ---
+    // --- AXE EST (MENGBWA) - COMPLET AVEC TOUTES LES CHAMBRES ---
     {
         id: 'bb-mbyo-mengbwa', name: 'Backbone Mbalmayo-Mengbwa', type: LiaisonType.FIBER, status: LiaisonStatus.OPERATIONAL, category: LiaisonCategory.BACKBONE,
         startCoordinates: mbalmayoCtt.coordinates, endCoordinates: getBtsCoords('site-mengbwa', btsStations),
@@ -288,57 +363,76 @@ export const initializeDefaultState = (): AppState => {
         color: '#ea580c', 
         distanceKm: 125.0, fiberCount: 48, 
         controlledByCttId: mbalmayoCtt.id, associatedBtsIds: ['site-mengbwa', 'site-ndick', 'site-mengueme', 'site-zoetele-camtel', 'site-metet'],
-        infrastructurePoints: [manchonNdick],
+        infrastructurePoints: [manchonNdick, manchonMengueme, manchonMetet],
         sections: [
+            // 1. Mbalmayo -> Ndick (48FO)
             { 
                 id: 'sec-mbyo-ndick', 
                 name: 'Tronçon Mbalmayo -> Ndick', 
                 fiberCount: 48, cableType: '48FO Souterrain (4x12)', lengthKm: 28.5,
+                standardId: 'STD_48_4x12',
                 startPointId: 'ctt-mbalmayo',
                 endPointId: 'ch-ndick-piquage',
-                fiberStrands: generateFibers(48, [
+                fiberStrands: generateFibersFromStandard('STD_48_4x12', [
                     { idx: 1, name: "SDH Mbyo-Mengwa [Bleu]" },
                     { idx: 2, name: "Protection Mbyo-Mengwa" },
                     { idx: 8, name: "Service LTE Ndick [Noir]" },
-                    { idx: 12, name: "Secours LTE Ndick [Aqua]" }
+                    { idx: 9, name: "Service Mengueme [Jaune]" },
+                    { idx: 11, name: "Service Metet [Rose]" }
                 ], 'sec-mbyo-ndick')
             },
+            // 2. Ndick -> Mengueme (24FO 4x6)
              { 
                  id: 'sec-ndick-mengueme', 
-                 name: 'Tronçon Ndick -> Mengueme', 
+                 name: 'Tronçon Ndick -> Piquage Mengueme', 
                  fiberCount: 24, cableType: '24FO Souterrain (4x6)', lengthKm: 5.8,
+                 standardId: 'STD_24_4x6_CAM',
                  startPointId: 'ch-ndick-piquage',
-                 fiberStrands: generateFibers(24, [
+                 endPointId: 'ch-mengueme-piquage',
+                 fiberStrands: generateFibersFromStandard('STD_24_4x6_CAM', [
                      { idx: 1, name: "SDH Continuité" },
-                     { idx: 2, name: "Protection Continuité" }
+                     { idx: 2, name: "Protection Continuité" },
+                     { idx: 3, name: "Réserve Continuité" },
+                     { idx: 9, name: "Service Mengueme [Orange/Vert]" } // Tube 2
                  ], 'sec-ndick-mengueme')
              },
+             // 3. Mengueme -> Metet (18FO Spécial)
              { 
                 id: 'sec-mengueme-metet', 
-                name: 'Tronçon Mengueme -> Metet', 
+                name: 'Tronçon Mengueme -> Piquage Metet', 
                 fiberCount: 18, 
                 cableType: '18FO Souterrain (3x6)', 
                 lengthKm: 5.7,
-                colorScheme: 'SPECIAL_MENGWA', // APPLYING SPECIFIC COLOR SCHEME
-                fiberStrands: generateFibers(18, [], 'sec-m-met', 'SPECIAL_MENGWA')
+                standardId: 'SPEC_MENGWA_18',
+                startPointId: 'ch-mengueme-piquage',
+                endPointId: 'ch-metet-piquage',
+                fiberStrands: generateFibersFromStandard('SPEC_MENGWA_18', [
+                    { idx: 1, name: "SDH Continuité [Bleu]" },
+                    { idx: 2, name: "Protection Continuité" },
+                    { idx: 11, name: "Service Metet [Tube 2]" }
+                ], 'sec-mengueme-metet')
              },
+             // 4. Metet -> Mengbwa (18FO Spécial)
             { 
                 id: 'sec-metet-mengbwa', 
                 name: 'Tronçon Metet -> Mengbwa', 
                 fiberCount: 18, 
                 cableType: '18FO Souterrain (3x6)', 
                 lengthKm: 85.0,
-                colorScheme: 'SPECIAL_MENGWA', // APPLYING SPECIFIC COLOR SCHEME
-                fiberStrands: generateFibers(18, [], 'sec-met-mengbwa', 'SPECIAL_MENGWA')
+                standardId: 'SPEC_MENGWA_18',
+                startPointId: 'ch-metet-piquage',
+                endPointId: 'site-mengbwa',
+                fiberStrands: generateFibersFromStandard('SPEC_MENGWA_18', [
+                    { idx: 1, name: "SDH Arrivée Mengbwa" }
+                ], 'sec-metet-mengbwa')
             }
         ],
-        fiberStrands: generateFibers(48, [
-            { idx: 6, name: "SDH Mbyo-Mengwa [Blanc]", colorCodeOverride: "Blanc" },
-            { idx: 8, name: "UMTS Ndick [Rouge]", colorCodeOverride: "Rouge" }
+        fiberStrands: generateFibersFromStandard('STD_48_4x12', [
+            { idx: 1, name: "SDH Mbyo-Mengwa [Bleu]", colorCodeOverride: "Bleu" }
         ])
     },
 
-    // --- LAST MILE ---
+    // --- LAST MILE (ACCÈS SITES) ---
     {
         id: 'lm-ndick', name: 'Last Mile Ndick', type: LiaisonType.FIBER, status: LiaisonStatus.OPERATIONAL, category: LiaisonCategory.LAST_MILE,
         startCoordinates: ndickChambreCoords, endCoordinates: getBtsCoords('site-ndick', btsStations),
@@ -346,12 +440,38 @@ export const initializeDefaultState = (): AppState => {
         color: '#84cc16',
         sections: [
             {
-                id: 'sec-lm-ndick',
-                name: 'Câble Accès Site Ndick',
+                id: 'sec-lm-ndick', name: 'Câble Accès Site Ndick',
                 fiberCount: 12, cableType: '12FO Aérien (Drop)', lengthKm: 0.150,
-                startPointId: 'ch-ndick-piquage',
-                endPointId: 'site-ndick',
-                fiberStrands: generateFibers(12, [{ idx: 1, name: "Arrivée LTE" }, { idx: 2, name: "Arrivée Secours" }], 'lm-ndick')
+                standardId: 'STD_12_1x12', startPointId: 'ch-ndick-piquage', endPointId: 'site-ndick',
+                fiberStrands: generateFibersFromStandard('STD_12_1x12', [{ idx: 1, name: "Arrivée LTE" }], 'lm-ndick')
+            }
+        ]
+    },
+    {
+        id: 'lm-mengueme', name: 'Last Mile Mengueme', type: LiaisonType.FIBER, status: LiaisonStatus.OPERATIONAL, category: LiaisonCategory.LAST_MILE,
+        startCoordinates: menguemeChambreCoords, endCoordinates: getBtsCoords('site-mengueme', btsStations),
+        distanceKm: 0.200, backboneDistanceKm: 34.3, fiberCount: 12, controlledByCttId: mbalmayoCtt.id, associatedBtsIds: ['site-mengueme'],
+        color: '#84cc16',
+        sections: [
+            {
+                id: 'sec-lm-mengueme', name: 'Câble Accès Site Mengueme',
+                fiberCount: 12, cableType: '12FO Aérien (Drop)', lengthKm: 0.200,
+                standardId: 'STD_12_1x12', startPointId: 'ch-mengueme-piquage', endPointId: 'site-mengueme',
+                fiberStrands: generateFibersFromStandard('STD_12_1x12', [{ idx: 1, name: "Arrivée 2G/3G" }], 'lm-mengueme')
+            }
+        ]
+    },
+    {
+        id: 'lm-metet', name: 'Last Mile Metet', type: LiaisonType.FIBER, status: LiaisonStatus.OPERATIONAL, category: LiaisonCategory.LAST_MILE,
+        startCoordinates: metetChambreCoords, endCoordinates: getBtsCoords('site-metet', btsStations),
+        distanceKm: 0.300, backboneDistanceKm: 40.0, fiberCount: 12, controlledByCttId: mbalmayoCtt.id, associatedBtsIds: ['site-metet'],
+        color: '#84cc16',
+        sections: [
+            {
+                id: 'sec-lm-metet', name: 'Câble Accès Site Metet',
+                fiberCount: 12, cableType: '12FO Aérien (Drop)', lengthKm: 0.300,
+                standardId: 'STD_12_1x12', startPointId: 'ch-metet-piquage', endPointId: 'site-metet',
+                fiberStrands: generateFibersFromStandard('STD_12_1x12', [{ idx: 1, name: "Arrivée GSM" }], 'lm-metet')
             }
         ]
     }

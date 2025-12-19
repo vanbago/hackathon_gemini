@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { CableSection, Bts, Ctt } from '../types';
 import { getRouteStats, searchLocation } from '../services/routingService';
+import { FIBER_STANDARDS, getFiberStandard } from '../storageService';
 
 interface TronconEditorProps {
   section: CableSection;
@@ -14,12 +15,11 @@ interface TronconEditorProps {
 const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, onSave, onDelete, onClose }) => {
   const [name, setName] = useState(section.name);
   const [cableType, setCableType] = useState(section.cableType);
-  const [fiberCount, setFiberCount] = useState(section.fiberCount);
   const [lengthKm, setLengthKm] = useState(section.lengthKm || 0);
   const [isHosted, setIsHosted] = useState(section.isHosted || false);
   
-  // NEW: Color Scheme State
-  const [colorScheme, setColorScheme] = useState<'STANDARD' | 'SPECIAL_MENGWA'>(section.colorScheme || 'STANDARD');
+  // NEW: Standard Selection
+  const [selectedStandardId, setSelectedStandardId] = useState<string>(section.standardId || 'STD_12_1x12');
 
   // GPS Coordinates State
   const [startLat, setStartLat] = useState(section.startCoordinate?.lat || 0);
@@ -44,36 +44,8 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
   const [endSearchResults, setEndSearchResults] = useState<{name:string, lat:number, lng:number}[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Calculated State for Cable Structure
-  const [structure, setStructure] = useState<{tubes: number, fibersPerTube: number, type: string}>({ tubes: 1, fibersPerTube: 12, type: 'Standard' });
-
-  // Update structure analysis when fiberCount changes
-  useEffect(() => {
-    let tubes = 1;
-    let fpt = 12;
-    let type = 'Standard G.652D';
-
-    if (fiberCount <= 6) { tubes = 1; fpt = 6; type = 'Drop Cable / Last Mile'; }
-    else if (fiberCount === 8) { tubes = 1; fpt = 8; type = 'Spécial (8 FO)'; }
-    else if (fiberCount <= 12) { tubes = 1; fpt = 12; type = 'Monotube Standard'; }
-    // CUSTOM LOGIC FOR 18 and 24 FO
-    else if (fiberCount === 18) { 
-        if (colorScheme === 'SPECIAL_MENGWA') {
-             tubes = 3; fpt = 6; type = 'Multitube (3x6) - Code Spécial (B,R,V,J,Vi,Bl)';
-        } else {
-             tubes = 3; fpt = 6; type = 'Multitube (3x6) - Standard (B,O,V,M,G,Bl)';
-        }
-    }
-    else if (fiberCount === 24) { tubes = 4; fpt = 6; type = 'Multitube (4x6)'; }
-    else if (fiberCount === 36) { tubes = 3; fpt = 12; type = 'Multitube (3x12)'; }
-    else if (fiberCount === 48) { tubes = 4; fpt = 12; type = 'Multitube (4x12)'; }
-    else if (fiberCount === 72) { tubes = 6; fpt = 12; type = 'Multitube (6x12)'; }
-    else if (fiberCount === 96) { tubes = 8; fpt = 12; type = 'Multitube (8x12)'; }
-    else if (fiberCount === 144) { tubes = 12; fpt = 12; type = 'Gros porteur (12x12)'; }
-    else { tubes = Math.ceil(fiberCount / 12); fpt = 12; type = 'Custom / Hébergé'; }
-
-    setStructure({ tubes, fibersPerTube: fpt, type });
-  }, [fiberCount, colorScheme]);
+  // Active Standard for Preview
+  const activeStandard = getFiberStandard(selectedStandardId) || FIBER_STANDARDS[0];
 
   // Handle Node Selection Logic
   useEffect(() => {
@@ -145,10 +117,10 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
         ...section,
         name,
         cableType,
-        fiberCount,
+        fiberCount: activeStandard.fiberCount,
         lengthKm,
         isHosted,
-        colorScheme, // SAVE THE SCHEME
+        standardId: selectedStandardId,
         startCoordinate: (startLat && startLng) ? { lat: startLat, lng: startLng } : undefined,
         endCoordinate: (endLat && endLng) ? { lat: endLat, lng: endLng } : undefined,
         startPointId: selectedStartNode || section.startPointId,
@@ -156,10 +128,19 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
     });
   };
 
+  const getTubeColorHex = (colorName: string) => {
+    const map: Record<string, string> = {
+      'Bleu': '#3b82f6', 'Orange': '#f97316', 'Vert': '#22c55e', 'Marron': '#854d0e',
+      'Gris': '#94a3b8', 'Blanc': '#f8fafc', 'Rouge': '#ef4444', 'Noir': '#000000',
+      'Jaune': '#eab308', 'Violet': '#a855f7', 'Rose': '#ec4899', 'Aqua': '#06b6d4'
+    };
+    return map[colorName] || '#64748b';
+  };
+  
+  // Logic to determine Tube Colors based on standard sequence (usually same as fibers)
   const getTubeColor = (idx: number) => {
-      // Standard 12 Colors (ITU-T)
-      const colors = ["bg-blue-500", "bg-orange-500", "bg-green-500", "bg-amber-700", "bg-slate-400", "bg-white", "bg-red-500", "bg-black", "bg-yellow-400", "bg-purple-500", "bg-pink-500", "bg-cyan-400"];
-      return colors[idx % 12];
+      const color = activeStandard.colors[idx % activeStandard.colors.length];
+      return getTubeColorHex(color);
   };
 
   // Sub-component for coordinate selection box
@@ -324,63 +305,35 @@ const TronconEditor: React.FC<TronconEditorProps> = ({ section, availableNodes, 
 
             {/* Capacity Engine */}
             <div className="bg-slate-800/50 rounded-lg p-4 border border-slate-700">
-                <label className="block text-xs font-bold text-teal-400 uppercase mb-3">Définition Physique du Câble</label>
+                <label className="block text-xs font-bold text-teal-400 uppercase mb-3">Définition Physique (Standard de Fibre)</label>
                 
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label className="block text-[10px] text-slate-400 mb-1">Capacité Totale (FO)</label>
-                        <div className="relative">
-                            <select 
-                                value={fiberCount} 
-                                onChange={e => setFiberCount(parseInt(e.target.value))} 
-                                className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white appearance-none font-bold"
-                            >
-                                <option value={6}>6 FO</option>
-                                <option value={8}>8 FO</option>
-                                <option value={12}>12 FO</option>
-                                <option value={18}>18 FO (3x6)</option>
-                                <option value={24}>24 FO (4x6)</option>
-                                <option value={36}>36 FO</option>
-                                <option value={48}>48 FO</option>
-                                <option value={72}>72 FO</option>
-                                <option value={96}>96 FO</option>
-                                <option value={144}>144 FO</option>
-                            </select>
-                            <div className="absolute right-3 top-2.5 pointer-events-none">
-                                <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    {/* NEW: COLOR SCHEME SELECTOR */}
-                    <div>
-                         <label className="block text-[10px] text-slate-400 mb-1">Schéma de Couleurs</label>
-                         <select 
-                            value={colorScheme}
-                            onChange={e => setColorScheme(e.target.value as 'STANDARD' | 'SPECIAL_MENGWA')}
-                            className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white font-bold"
-                            disabled={fiberCount !== 18 && fiberCount !== 24} // Only enable for relevant counts
-                         >
-                            <option value="STANDARD">Standard (Bleu, Orange...)</option>
-                            <option value="SPECIAL_MENGWA">Spécial (Bleu, Rouge, Vert...)</option>
-                         </select>
-                         <div className="text-[9px] text-slate-500 mt-1">
-                             {colorScheme === 'SPECIAL_MENGWA' ? 'Ordre: Bleu, Rouge, Vert, Jaune, Violet, Blanc' : 'Ordre: Bleu, Orange, Vert, Marron, Gris, Blanc'}
-                         </div>
-                    </div>
+                <div className="mb-4">
+                     <label className="block text-[10px] text-slate-400 mb-1">Standard / Structure du Câble</label>
+                     <select 
+                        value={selectedStandardId}
+                        onChange={e => setSelectedStandardId(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-sm text-white font-bold"
+                     >
+                        {FIBER_STANDARDS.map(std => (
+                            <option key={std.id} value={std.id}>{std.name}</option>
+                        ))}
+                     </select>
+                     <div className="text-[9px] text-slate-500 mt-1 flex justify-between">
+                         <span>Config: {activeStandard.tubes} Tubes de {activeStandard.fibersPerTube} Fibres ({activeStandard.fiberCount} FO total)</span>
+                         <span className="italic">Couleurs: {activeStandard.colors.slice(0, 6).join(', ')}...</span>
+                     </div>
                 </div>
 
                 {/* Visualizer */}
                 <div className="mb-2">
                     <label className="block text-[10px] text-slate-500 mb-2">Prévisualisation Coupe Transversale</label>
                     <div className="flex flex-wrap gap-2 bg-slate-900 p-3 rounded-lg border border-slate-700 justify-center min-h-[60px] items-center">
-                        {Array.from({ length: structure.tubes }).map((_, i) => (
-                            <div key={i} className={`w-8 h-8 rounded-full border-2 border-slate-600 shadow-lg flex items-center justify-center relative ${getTubeColor(i)}`} title={`Tube ${i+1}`}>
-                                <span className={`text-[9px] font-bold ${i === 5 || i === 1 ? 'text-slate-900' : 'text-white'}`}>{structure.fibersPerTube}</span>
+                        {Array.from({ length: activeStandard.tubes }).map((_, i) => (
+                            <div key={i} className="w-8 h-8 rounded-full border-2 border-slate-600 shadow-lg flex items-center justify-center relative" style={{backgroundColor: getTubeColor(i)}} title={`Tube ${i+1}`}>
+                                <span className={`text-[9px] font-bold ${['Blanc', 'Jaune'].includes(activeStandard.colors[i % activeStandard.colors.length]) ? 'text-slate-900' : 'text-white'}`}>{activeStandard.fibersPerTube}</span>
                             </div>
                         ))}
                     </div>
-                    <div className="text-center text-[10px] text-slate-500 mt-1 italic">{structure.type}</div>
                 </div>
             </div>
 

@@ -41,6 +41,7 @@ const Dashboard: React.FC = () => {
   // Backend Connection State
   const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [isDatabaseLoading, setIsDatabaseLoading] = useState(true);
+  const [isRetryingConnection, setIsRetryingConnection] = useState(false);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -63,50 +64,60 @@ const Dashboard: React.FC = () => {
   };
 
   // --- INITIAL DATA LOADING ---
+  const loadData = async (isRetry = false) => {
+      if (isRetry) setIsRetryingConnection(true);
+      try {
+          // 1. Check Backend Health
+          const isAlive = await apiService.checkHealth();
+          setIsBackendConnected(isAlive);
+
+          // 2. Load State
+          const savedState = await apiService.loadFullState();
+
+          if (savedState && (savedState.ctt || savedState.btsStations.length > 0)) {
+              if (isRetry && isAlive) {
+                  addNotification("Connexion Rétablie", "Le serveur est en ligne. Données synchronisées.", "SUCCESS");
+              } else if (!isRetry) {
+                  console.log("Loaded saved state successfully.");
+              }
+
+              setActivities(savedState.activities || []);
+              setCtt(savedState.ctt || null);
+              setBtsStations(savedState.btsStations || []);
+              setLiaisons(savedState.liaisons || []);
+              setTickets(savedState.tickets || []);
+              
+              if (!isAlive && !isRetry) {
+                  addNotification("Mode Hors Ligne", "Connexion serveur échouée. Chargement des données locales.", "WARNING");
+              }
+          } else {
+              console.log("No saved state found (New Deployment). Seeding defaults...");
+              const defaultState = initializeDefaultState();
+              
+              await apiService.initializeDefaults(defaultState);
+              
+              setActivities(defaultState.activities);
+              setCtt(defaultState.ctt);
+              setBtsStations(defaultState.btsStations);
+              setLiaisons(defaultState.liaisons);
+              setTickets(defaultState.tickets);
+          }
+      } catch (e) {
+          console.error("Init Error", e);
+          addNotification("Erreur Critique", "Impossible de charger l'application.", "ERROR");
+      } finally {
+          setIsDatabaseLoading(false);
+          if (isRetry) setIsRetryingConnection(false);
+      }
+  };
+
   useEffect(() => {
-    const initApp = async () => {
-        try {
-            // 1. Check Backend Health (just for UI indicator)
-            const isAlive = await apiService.checkHealth();
-            setIsBackendConnected(isAlive);
-
-            // 2. Try to load State (Remote -> Local Fallback)
-            const savedState = await apiService.loadFullState();
-
-            if (savedState && (savedState.ctt || savedState.btsStations.length > 0)) {
-                console.log("Loaded saved state successfully.");
-                setActivities(savedState.activities || []);
-                setCtt(savedState.ctt || null);
-                setBtsStations(savedState.btsStations || []);
-                setLiaisons(savedState.liaisons || []);
-                setTickets(savedState.tickets || []);
-                
-                if (!isAlive) {
-                    addNotification("Mode Hors Ligne", "Connexion serveur échouée. Chargement des données locales.", "WARNING");
-                }
-            } else {
-                console.log("No saved state found (New Deployment). Seeding defaults...");
-                const defaultState = initializeDefaultState();
-                
-                // Persist defaults immediately to DB/Local
-                await apiService.initializeDefaults(defaultState);
-                
-                setActivities(defaultState.activities);
-                setCtt(defaultState.ctt);
-                setBtsStations(defaultState.btsStations);
-                setLiaisons(defaultState.liaisons);
-                setTickets(defaultState.tickets);
-            }
-        } catch (e) {
-            console.error("Init Error", e);
-            addNotification("Erreur Critique", "Impossible de charger l'application.", "ERROR");
-        } finally {
-            setIsDatabaseLoading(false);
-        }
-    };
-
-    initApp();
+    loadData();
   }, []);
+
+  const handleRetryConnection = () => {
+      loadData(true);
+  };
 
   const handleChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -292,10 +303,20 @@ const Dashboard: React.FC = () => {
                   DB: NODE.JS (LOGGED)
               </span>
           ) : (
-             <span className="flex items-center gap-1 text-[10px] text-orange-400 bg-orange-900/20 px-2 py-0.5 rounded border border-orange-500/30">
-                  <span className="w-1.5 h-1.5 bg-orange-500 rounded-full"></span>
-                  DB: LOCAL
-              </span>
+             <div className="flex items-center gap-1">
+                 <span className="flex items-center gap-1 text-[10px] text-orange-400 bg-orange-900/20 px-2 py-0.5 rounded border border-orange-500/30">
+                      <span className="w-1.5 h-1.5 bg-orange-500 rounded-full"></span>
+                      DB: LOCAL (HORS LIGNE)
+                  </span>
+                  <button 
+                    onClick={handleRetryConnection}
+                    disabled={isRetryingConnection}
+                    title="Réessayer la connexion au serveur"
+                    className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                  >
+                      <svg className={`w-3 h-3 ${isRetryingConnection ? 'animate-spin text-blue-400' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                  </button>
+             </div>
           )}
           {isSaving && <span className="text-xs text-blue-400 animate-pulse ml-2">Sauvegarde en cours...</span>}
         </div>
