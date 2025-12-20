@@ -1,5 +1,8 @@
 
 
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+
 const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
@@ -8,7 +11,8 @@ const fs = require('fs');
 
 const app = express();
 const PORT = 3001;
-const DB_PATH = path.join(__dirname, 'transmission.db');
+// Resolve DB path relative to current execution context
+const DB_PATH = path.join(process.cwd(), 'transmission.db');
 
 // Middleware
 app.use(cors());
@@ -44,7 +48,7 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
         console.error('Error opening database', err.message);
     } else {
-        console.log('Connected to SQLite database.');
+        console.log(`Connected to SQLite database at ${DB_PATH}`);
         initDb();
     }
 });
@@ -57,6 +61,8 @@ function initDb() {
         db.run(`CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, status TEXT, data TEXT)`);
         db.run(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, data TEXT)`);
+        // NEW: AI History
+        db.run(`CREATE TABLE IF NOT EXISTS ai_history (id TEXT PRIMARY KEY, data TEXT)`);
         // NEW: Audit Log Table
         db.run(`CREATE TABLE IF NOT EXISTS system_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, message TEXT, meta TEXT, timestamp DATETIME)`);
     });
@@ -84,12 +90,13 @@ const getQuery = (query, params = []) => {
 // 1. GET INITIAL STATE
 app.get('/api/state', async (req, res, next) => {
     try {
-        const [sitesRows, liaisonsRows, activitiesRows, ticketsRows, messagesRows] = await Promise.all([
+        const [sitesRows, liaisonsRows, activitiesRows, ticketsRows, messagesRows, aiHistoryRows] = await Promise.all([
             getQuery("SELECT data FROM sites"),
             getQuery("SELECT data FROM liaisons"),
             getQuery("SELECT data FROM activities"),
             getQuery("SELECT data FROM tickets"),
-            getQuery("SELECT data FROM messages")
+            getQuery("SELECT data FROM messages"),
+            getQuery("SELECT data FROM ai_history WHERE id = 'current_session'")
         ]);
 
         const sites = sitesRows.map(r => JSON.parse(r.data));
@@ -97,17 +104,23 @@ app.get('/api/state', async (req, res, next) => {
         const activities = activitiesRows.map(r => JSON.parse(r.data));
         const tickets = ticketsRows ? ticketsRows.map(r => JSON.parse(r.data)) : [];
         const messages = messagesRows ? messagesRows.map(r => JSON.parse(r.data)) : [];
+        const aiHistory = aiHistoryRows && aiHistoryRows.length > 0 ? JSON.parse(aiHistoryRows[0].data) : null;
 
         const ctt = sites.find(s => s.id.includes('ctt')) || null;
         const btsStations = sites.filter(s => !s.id.includes('ctt'));
 
-        res.json({ ctt, btsStations, liaisons, activities, tickets, messages });
+        res.json({ ctt, btsStations, liaisons, activities, tickets, messages, aiHistory });
     } catch (error) {
         next(error);
     }
 });
 
-// 2. BATCH INIT
+// 2. DOWNLOAD DB BACKUP
+app.get('/api/admin/download-db', (req, res) => {
+    res.download(DB_PATH, `transmission_backup_${Date.now()}.db`);
+});
+
+// 3. BATCH INIT
 app.post('/api/init-defaults', async (req, res, next) => {
     const { ctt, btsStations, liaisons, activities, tickets } = req.body;
     try {
@@ -138,7 +151,7 @@ app.post('/api/init-defaults', async (req, res, next) => {
     } catch (error) { next(error); }
 });
 
-// 3. PERSISTENCE
+// 4. PERSISTENCE
 app.post('/api/sites', async (req, res, next) => {
     const site = req.body;
     if (!site.id) return res.status(400).json({ error: "Missing site ID" });
@@ -190,6 +203,16 @@ app.post('/api/messages', async (req, res, next) => {
     } catch (e) { next(e); }
 });
 
+app.post('/api/ai_history', async (req, res, next) => {
+    const historyObj = req.body;
+    historyObj.id = 'current_session';
+    try {
+        await runQuery("INSERT OR REPLACE INTO ai_history (id, data) VALUES (?, ?)", [historyObj.id, JSON.stringify(historyObj)]);
+        log('INFO', `AI History Updated`, { length: historyObj.history.length });
+        res.json({ success: true });
+    } catch (e) { next(e); }
+});
+
 // Centralized Error Handler
 app.use((err, req, res, next) => {
     log('ERROR', 'Unhandled Error', { error: err.message, stack: err.stack, url: req.url });
@@ -200,6 +223,6 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    log('INFO', `Server Started`, { port: PORT });
+    console.log(`Node Server running on port ${PORT}`);
+    log('INFO', `Server Started`, { port: PORT, runtime: "Node" });
 });

@@ -20,10 +20,14 @@ db.query(`CREATE TABLE IF NOT EXISTS liaisons (id TEXT PRIMARY KEY, data TEXT)`)
 db.query(`CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, status TEXT, data TEXT)`).run();
 db.query(`CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, status TEXT, data TEXT)`).run();
 db.query(`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, data TEXT)`).run();
+// NEW: AI Chat History Table
+db.query(`CREATE TABLE IF NOT EXISTS ai_history (id TEXT PRIMARY KEY, data TEXT)`).run();
+
 // Keeping system_logs for audit/debugging
 db.query(`CREATE TABLE IF NOT EXISTS system_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, message TEXT, meta TEXT, timestamp DATETIME)`).run();
 
-console.log(`🔌 Database connected at ${DB_PATH} using bun:sqlite`);
+console.log(`🔌 Database LINKED successfully at: ./${DB_PATH}`);
+console.log(`   (All data will be persisted to this file)`);
 
 // --- LOGGING UTILITY ---
 const log = (level: string, message: string, meta: any = {}) => {
@@ -68,14 +72,28 @@ Bun.serve({
                 const activities = db.query("SELECT data FROM activities").all().map((row: any) => JSON.parse(row.data));
                 const tickets = db.query("SELECT data FROM tickets").all().map((row: any) => JSON.parse(row.data));
                 const messages = db.query("SELECT data FROM messages").all().map((row: any) => JSON.parse(row.data));
+                const aiHistoryRows = db.query("SELECT data FROM ai_history WHERE id = 'current_session'").all().map((row: any) => JSON.parse(row.data));
 
                 const ctt = sites.find((s: any) => s.id.includes('ctt')) || null;
                 const btsStations = sites.filter((s: any) => !s.id.includes('ctt'));
+                const aiHistory = aiHistoryRows.length > 0 ? aiHistoryRows[0] : null;
 
                 return Response.json(
-                    { ctt, btsStations, liaisons, activities, tickets, messages },
+                    { ctt, btsStations, liaisons, activities, tickets, messages, aiHistory },
                     { headers: corsHeaders }
                 );
+            }
+
+            // GET /api/admin/download-db (NEW: BACKUP FEATURE)
+            if (url.pathname === "/api/admin/download-db" && req.method === "GET") {
+                const file = Bun.file(DB_PATH);
+                return new Response(file, {
+                    headers: {
+                        "Content-Type": "application/x-sqlite3",
+                        "Content-Disposition": `attachment; filename="transmission_backup_${Date.now()}.db"`,
+                        ...corsHeaders
+                    }
+                });
             }
 
             // POST /api/init-defaults
@@ -160,6 +178,19 @@ Bun.serve({
                   .run({ $id: message.id, $data: JSON.stringify(message) });
 
                 log('INFO', `Message Saved from ${message.sender}`, { id: message.id });
+                return Response.json({ success: true }, { headers: corsHeaders });
+            }
+            
+            // POST /api/ai_history
+            if (url.pathname === "/api/ai_history" && req.method === "POST") {
+                const historyObj: any = await req.json();
+                // Ensure ID is current_session for simplicity in this version
+                historyObj.id = 'current_session';
+
+                db.query("INSERT OR REPLACE INTO ai_history (id, data) VALUES ($id, $data)")
+                  .run({ $id: historyObj.id, $data: JSON.stringify(historyObj) });
+
+                log('INFO', `AI History Updated`, { length: historyObj.history.length });
                 return Response.json({ success: true }, { headers: corsHeaders });
             }
             

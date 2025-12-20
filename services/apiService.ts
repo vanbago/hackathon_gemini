@@ -1,6 +1,6 @@
 
 
-import { Activity, Bts, Ctt, Liaison, Ticket, ChatMessage } from "../types";
+import { Activity, Bts, Ctt, Liaison, Ticket, ChatMessage, AiChatHistory } from "../types";
 
 const API_URL = "http://localhost:3001/api";
 const LOCAL_STORAGE_KEY = "transmission_db_v1";
@@ -68,9 +68,9 @@ const monitoredRequest = async (entity: string, name: string, requestFn: () => P
 const getLocalDb = () => {
     try {
         const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
-        return stored ? JSON.parse(stored) : { sites: [], liaisons: [], activities: [], tickets: [], messages: [] };
+        return stored ? JSON.parse(stored) : { sites: [], liaisons: [], activities: [], tickets: [], messages: [], aiHistory: null };
     } catch (e) {
-        return { sites: [], liaisons: [], activities: [], tickets: [], messages: [] };
+        return { sites: [], liaisons: [], activities: [], tickets: [], messages: [], aiHistory: null };
     }
 };
 
@@ -82,7 +82,15 @@ const saveLocalDb = (data: any) => {
 
 const updateLocalItem = (collection: string, item: any) => {
     const db = getLocalDb();
-    if (!db[collection]) db[collection] = [];
+    if (!db[collection]) {
+        // Special handle for singleton objects like aiHistory
+        if (collection === 'aiHistory') {
+            db[collection] = item;
+            saveLocalDb(db);
+            return;
+        }
+        db[collection] = [];
+    }
     
     const index = db[collection].findIndex((i: any) => i.id === item.id);
     if (index >= 0) {
@@ -121,7 +129,8 @@ export const apiService = {
                     liaisons: data.liaisons || [],
                     activities: data.activities || [],
                     tickets: data.tickets || [],
-                    messages: data.messages || []
+                    messages: data.messages || [],
+                    aiHistory: data.aiHistory || null
                 };
                 saveLocalDb(localFormat);
                 notifyTransaction({ id: txId, entity: 'DATABASE', name: 'Initial Load', action: 'LOAD', status: 'SUCCESS', timestamp: Date.now() });
@@ -147,7 +156,8 @@ export const apiService = {
             liaisons: localData.liaisons || [],
             activities: localData.activities || [],
             tickets: localData.tickets || [],
-            messages: localData.messages || []
+            messages: localData.messages || [],
+            aiHistory: localData.aiHistory || null
         };
     },
 
@@ -167,6 +177,25 @@ export const apiService = {
             tickets: data.tickets
         };
         saveLocalDb(localFormat);
+    },
+
+    downloadDatabase: async () => {
+        try {
+            const response = await fetch(`${API_URL}/admin/download-db`);
+            if (!response.ok) throw new Error("Download failed");
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `transmission_backup_${new Date().toISOString().split('T')[0]}.db`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            return true;
+        } catch (e) {
+            console.error(e);
+            return false;
+        }
     },
 
     // --- MONITORED PERSISTENCE METHODS ---
@@ -235,6 +264,26 @@ export const apiService = {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(message)
+                });
+                return res.ok ? await res.json() : { success: true, offline: true };
+            } catch (e) { return { success: true, offline: true }; }
+        });
+    },
+
+    saveAiHistory: async (history: {role: string, parts: {text: string}[]}[]) => {
+        const historyObj: AiChatHistory = {
+            id: 'current_session',
+            history: history,
+            lastUpdated: Date.now()
+        };
+
+        return monitoredRequest('AI_MEMORY', 'Chat Context', async () => {
+            updateLocalItem('aiHistory', historyObj);
+            try {
+                const res = await fetch(`${API_URL}/ai_history`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(historyObj)
                 });
                 return res.ok ? await res.json() : { success: true, offline: true };
             } catch (e) { return { success: true, offline: true }; }

@@ -342,3 +342,10 @@ export interface ChatMessage {
   timestamp: string;
   isAnalyzed?: boolean;
 }
+
+// --- NEW: AI HISTORY PERSISTENCE ---
+export interface AiChatHistory {
+    id: 'current_session';
+    history: {role: string, parts: {text: string}[]}[];
+    lastUpdated: number;
+}

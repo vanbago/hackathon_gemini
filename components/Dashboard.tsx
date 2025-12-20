@@ -1,10 +1,11 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import MapVisualizer from './MapVisualizer';
 import NotificationCenter from './NotificationCenter';
 import FiberEditor from './FiberEditor';
 import NodeEditor from './NodeEditor'; 
-import StorageMonitor from './StorageMonitor'; // IMPORT NEW COMPONENT
+import StorageMonitor from './StorageMonitor'; 
 
 import { Activity, ActivityStatus, Ctt, Bts, Liaison, Ticket, AppNotification, DashboardTab } from '../types';
 import { chatWithAgent, analyzeImageContext } from '../services/geminiService';
@@ -87,6 +88,11 @@ const Dashboard: React.FC = () => {
               setLiaisons(savedState.liaisons || []);
               setTickets(savedState.tickets || []);
               
+              // Load AI History if available
+              if (savedState.aiHistory && savedState.aiHistory.history) {
+                   setChatHistory(savedState.aiHistory.history);
+              }
+
               if (!isAlive && !isRetry) {
                   addNotification("Mode Hors Ligne", "Connexion serveur échouée. Chargement des données locales.", "WARNING");
               }
@@ -124,18 +130,32 @@ const Dashboard: React.FC = () => {
     if (!chatInput.trim()) return;
 
     const userMsg = { role: "user", parts: [{ text: chatInput }] };
-    setChatHistory(prev => [...prev, userMsg]);
+    const updatedHistory = [...chatHistory, userMsg];
+    setChatHistory(updatedHistory);
     setChatInput("");
     setIsChatting(true);
+
+    // Save user message immediately for persistence feeling
+    apiService.saveAiHistory(updatedHistory);
 
     try {
         // We pass the FULL live architecture to the AI
         const contextData = { btsStations, liaisons, tickets: [], activities };
-        const responseText = await chatWithAgent([...chatHistory, userMsg], chatInput, contextData);
-        setChatHistory(prev => [...prev, { role: "model", parts: [{ text: responseText }] }]);
+        const responseText = await chatWithAgent(updatedHistory, chatInput, contextData);
+        
+        // Ensure responseText is a string before setting state
+        const safeResponse = responseText || "Erreur: Pas de réponse de l'IA.";
+        
+        const finalHistory = [...updatedHistory, { role: "model", parts: [{ text: safeResponse }] }];
+        setChatHistory(finalHistory);
+        
+        // Persist final history to DB
+        await apiService.saveAiHistory(finalHistory);
+        
     } catch (err) {
         console.error(err);
-        setChatHistory(prev => [...prev, { role: "model", parts: [{ text: "Erreur de connexion à l'IA." }] }]);
+        const errorHistory = [...updatedHistory, { role: "model", parts: [{ text: "Erreur de connexion à l'IA." }] }];
+        setChatHistory(errorHistory);
         addNotification("Erreur IA", "L'assistant n'a pas pu traiter votre demande.", "ERROR");
     } finally {
         setIsChatting(false);

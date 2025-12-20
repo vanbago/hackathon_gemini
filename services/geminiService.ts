@@ -1,10 +1,10 @@
 
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { Activity, ActivityStatus, Bts, Liaison, LiaisonStatus, Ticket, TicketPriority, TicketStatus, TicketType, Operator, ActivityContext, InfrastructureType, ChatMessage } from "../types";
 
 // Initialize Gemini Client
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Note: process.env.API_KEY requires 'define' in vite.config.ts or import.meta.env usage
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
 // Helper to safely parse JSON from AI which might wrap it in markdown code blocks
 const safeJsonParse = (text: string | undefined) => {
@@ -186,7 +186,7 @@ export const chatWithAgent = async (
   history: {role: string, parts: {text: string}[]}[], 
   message: string,
   contextData: ChatContextData
-) => {
+): Promise<string> => {
   try {
     const systemInstruction = generateSystemInstruction(contextData);
 
@@ -200,7 +200,8 @@ export const chatWithAgent = async (
     });
     
     const result = await chat.sendMessage({ message });
-    return result.text;
+    // Ensure we always return a string, even if result.text is undefined
+    return result.text || "Désolé, la réponse reçue est vide.";
   } catch (error) {
     console.error("Chat Error", error);
     return "Désolé, je ne peux pas accéder aux données d'architecture pour le moment (Erreur API ou Réseau).";

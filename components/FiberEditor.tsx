@@ -216,9 +216,20 @@ const FiberEditor: React.FC<FiberEditorProps> = ({ liaison: initialLiaison, avai
     let finalStart = currentLiaisonObj.startCoordinates;
     let finalEnd = currentLiaisonObj.endCoordinates;
     
-    if (sections.length > 0) {
-         if (sections[0].startCoordinate) finalStart = sections[0].startCoordinate;
-         if (sections[sections.length - 1].endCoordinate) finalEnd = sections[sections.length - 1].endCoordinate;
+    // --- CORRECTION CRITIQUE : ACCÈS SÉCURISÉ ---
+    if (sections && sections.length > 0) {
+         const firstSec = sections[0];
+         // On accède au dernier élément de manière sûre
+         const lastSec = sections[sections.length - 1];
+
+         if (firstSec && firstSec.startCoordinate) {
+             finalStart = firstSec.startCoordinate;
+         }
+         
+         // Vérification stricte avant d'accéder à endCoordinate
+         if (lastSec && lastSec.endCoordinate) {
+             finalEnd = lastSec.endCoordinate;
+         }
     }
     
     const totalDist = sections.reduce((acc, sec) => acc + (sec.lengthKm || 0), 0);
